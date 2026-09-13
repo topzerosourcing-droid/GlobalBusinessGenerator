@@ -953,10 +953,10 @@ export const SuperAdminSuite: React.FC<SuperAdminSuiteProps> = ({ onOpenPlan }) 
                 </div>
                 <div className="text-xs text-slate-600 space-y-1">
                   <div>Vercel Domain: <span className="font-mono text-indigo-700 font-semibold">globalbusinessgenerator.vercel.app</span></div>
-                  <div>Project ID: <span className="font-mono">airy-formula-p6shk</span></div>
+                  <div>Project ID: <span className="font-mono">globalbusinessgenerator</span></div>
                   <div className="pt-1">
                     <a
-                      href="https://console.firebase.google.com/project/airy-formula-p6shk/authentication/settings"
+                      href="https://console.firebase.google.com/project/globalbusinessgenerator/authentication/settings"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold underline"

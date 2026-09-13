@@ -1,5 +1,6 @@
 import { collection, addDoc, doc, setDoc, updateDoc, increment, getDoc } from 'firebase/firestore';
-import { db, auth } from './firebase';
+import { logEvent } from 'firebase/analytics';
+import { db, auth, analytics } from './firebase';
 import { AnalyticsEventType, AnalyticsEvent } from '../types';
 
 /**
@@ -47,6 +48,15 @@ export async function trackAnalyticsEvent(
   } catch (err) {
     // Analytics failures must never crash client flow
     console.debug('Analytics capture deferred or offline:', err);
+  }
+
+  // Also log to Google Analytics (Measurement ID: G-WRKKP8RRND) if available
+  try {
+    if (analytics) {
+      logEvent(analytics, eventType, metadata);
+    }
+  } catch (err) {
+    // Non-fatal
   }
 }
 

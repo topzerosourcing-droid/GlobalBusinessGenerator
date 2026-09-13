@@ -25,6 +25,7 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
+import { getAnalytics, isSupported } from 'firebase/analytics';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { UserProfile, BusinessPlan, isPermanentSuperAdminEmail, PERMANENT_SUPER_ADMIN_EMAILS } from '../types';
 import { 
@@ -40,12 +41,22 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// Ensure we pass the specific firestoreDatabaseId if configured
-export const db = firebaseConfig.firestoreDatabaseId 
+// Ensure we pass the specific firestoreDatabaseId if configured (fallback to default)
+export const db = (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)')
   ? getFirestore(app, firebaseConfig.firestoreDatabaseId) 
   : getFirestore(app);
 
 export const storage = getStorage(app);
+
+// Initialize Firebase Analytics with measurement ID: G-WRKKP8RRND
+export let analytics: any = null;
+if (typeof window !== 'undefined') {
+  isSupported().then((supported) => {
+    if (supported) {
+      analytics = getAnalytics(app);
+    }
+  }).catch(() => {});
+}
 
 // Authentication helpers
 export const signInWithGoogle = async () => {
