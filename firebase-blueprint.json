@@ -1,0 +1,175 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile and subscription metadata",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "country": { "type": "string" },
+        "preferredCurrency": { "type": "string" },
+        "tier": { "type": "string", "enum": ["free", "starter", "pro", "enterprise"] },
+        "role": { "type": "string", "enum": ["USER", "ADMIN", "SUPER_ADMIN"] },
+        "status": { "type": "string", "enum": ["active", "deactivated", "suspended"] },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "referralCode": { "type": "string" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "BusinessPlan": {
+      "title": "BusinessPlan",
+      "description": "Comprehensive 34-section business plan document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "status": { "type": "string", "enum": ["draft", "free_preview", "payment_pending", "paid", "cancelled", "refunded", "generated", "finalized"] },
+        "input": { "type": "object" },
+        "generatedPlan": { "type": "object" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "shareSlug": { "type": "string" },
+        "isPublic": { "type": "boolean" }
+      },
+      "required": ["id", "userId", "status", "input", "generatedPlan", "createdAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Monetization package product catalog definition",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "packageKey": { "type": "string", "enum": ["free", "pro", "investor"] },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "priceUSD": { "type": "number" },
+        "currency": { "type": "string" },
+        "features": { "type": "array" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["id", "packageKey", "name", "priceUSD", "currency"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Purchase order for business plan entitlement",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string" },
+        "userId": { "type": "string" },
+        "planId": { "type": "string" },
+        "productPackage": { "type": "string", "enum": ["free", "pro", "investor"] },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "payment_pending", "completed", "paid", "failed", "cancelled", "refunded"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "paymentProvider": { "type": "string" },
+        "providerOrderId": { "type": "string" },
+        "providerTransactionId": { "type": "string" }
+      },
+      "required": ["orderId", "userId", "planId", "productPackage", "amount", "currency", "status", "createdAt", "paymentProvider"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Verified transaction record from payment provider",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderId": { "type": "string" },
+        "userId": { "type": "string" },
+        "planId": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "paymentProvider": { "type": "string" },
+        "transactionId": { "type": "string" },
+        "status": { "type": "string", "enum": ["succeeded", "failed", "refunded"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "orderId", "userId", "planId", "amount", "currency", "paymentProvider", "transactionId", "status", "createdAt"]
+    },
+    "Entitlement": {
+      "title": "Entitlement",
+      "description": "Access control entitlement granting unlocked features for a plan or user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "planId": { "type": "string" },
+        "packageId": { "type": "string", "enum": ["free", "pro", "investor"] },
+        "status": { "type": "string", "enum": ["active", "revoked", "refunded"] },
+        "grantedAt": { "type": "string" },
+        "orderId": { "type": "string" },
+        "features": { "type": "object" },
+        "verificationToken": { "type": "string" }
+      },
+      "required": ["id", "userId", "planId", "packageId", "status", "grantedAt"]
+    },
+    "Subscription": {
+      "title": "Subscription",
+      "description": "Recurring subscription metadata if needed later",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "plan": { "type": "string" },
+        "status": { "type": "string" },
+        "currentPeriodEnd": { "type": "string" }
+      },
+      "required": ["id", "userId", "plan", "status"]
+    },
+    "Referral": {
+      "title": "Referral",
+      "description": "Referral tracking and conversion record",
+      "type": "object",
+      "properties": {
+        "referralCode": { "type": "string" },
+        "userId": { "type": "string" },
+        "clicksCount": { "type": "number" },
+        "signupsCount": { "type": "number" },
+        "conversionsCount": { "type": "number" }
+      },
+      "required": ["referralCode", "userId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Private user account profile"
+    },
+    "/business_plans/{planId}": {
+      "schema": "BusinessPlan",
+      "description": "User business plan documents"
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Public catalog of monetization packages"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer purchase orders for business plan packages"
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Verified transaction records"
+    },
+    "/entitlements/{entitlementId}": {
+      "schema": "Entitlement",
+      "description": "Verified feature access entitlements"
+    },
+    "/subscriptions/{subscriptionId}": {
+      "schema": "Subscription",
+      "description": "Recurring subscription records"
+    },
+    "/referrals/{referralCode}": {
+      "schema": "Referral",
+      "description": "Referral affiliate attribution records"
+    },
+    "/analytics_events/{eventId}": {
+      "schema": { "$ref": "AnalyticsEvent" },
+      "description": "Platform analytics tracking telemetry"
+    }
+  }
+}
