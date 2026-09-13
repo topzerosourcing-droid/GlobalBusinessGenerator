@@ -11,39 +11,64 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    // Helper to verify Super Admin email address (supports exact and lowercase matching)
+    function isSuperAdminEmail(email) {
+      return email != null && (
+        email == 'gabolekwetopo@gmail.com' ||
+        email == 'topogabolekwe@gmail.com' ||
+        email.lower() == 'gabolekwetopo@gmail.com' ||
+        email.lower() == 'topogabolekwe@gmail.com'
+      );
+    }
+
     // Permanent Super Admin verification:
-    // 1. Authenticated email matches one of the two permanent super admin accounts (case-insensitive)
-    // 2. OR verified super_admin document exists
+    // 1. Authenticated email matches gabolekwetopo@gmail.com or topogabolekwe@gmail.com
+    // 2. OR verified super_admin document exists by UID
+    // 3. OR user profile document has role == 'SUPER_ADMIN' or matches super admin email
     function isSuperAdmin() {
       return isAuthenticated() && (
-        (request.auth.token.email != null && (
-          request.auth.token.email.lower() == 'topogabolekwe@gmail.com' ||
-          request.auth.token.email.lower() == 'gabolekwetopo@gmail.com'
-        )) ||
-        exists(/databases/$(database)/documents/super_admins/$(request.auth.uid))
+        (request.auth.token.email != null && isSuperAdminEmail(request.auth.token.email)) ||
+        exists(/databases/$(database)/documents/super_admins/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
+          isSuperAdminEmail(get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email) ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'SUPER_ADMIN'
+        ))
       );
+    }
+
+    // =========================================================================
+    // MASTER SUPER ADMIN ACCESS GATE
+    // =========================================================================
+    // Grants complete, unrestricted read, write, create, update, and delete rights
+    // across ALL collections and documents for gabolekwetopo@gmail.com & topogabolekwe@gmail.com
+    match /{document=**} {
+      allow read, write: if isSuperAdmin();
     }
 
     // Super Admin collection - internal directory
     match /super_admins/{adminId} {
-      allow read, write: if isSuperAdmin();
+      allow read, write: if isSuperAdmin() || (isAuthenticated() && isSuperAdminEmail(request.auth.token.email));
     }
 
     // User profile documents:
-    // - Super Admin can read, create, update, delete ANY user profile
+    // - Super Admin has full unrestricted read/write/delete rights
     // - Owner can read their own profile
-    // - Owner cannot grant themselves SUPER_ADMIN role or alter account status
+    // - Super admin emails can always create/update their profile with SUPER_ADMIN role & enterprise tier
     match /users/{userId} {
       allow read: if isOwner(userId) || isSuperAdmin();
-      allow create: if isSuperAdmin() || (
-        isOwner(userId) &&
-        (!('role' in request.resource.data) || request.resource.data.role == 'USER' || request.resource.data.role == null) &&
-        (!('isSuperAdmin' in request.resource.data) || request.resource.data.isSuperAdmin != true)
-      );
-      allow update: if isSuperAdmin() || (
-        isOwner(userId) &&
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'isSuperAdmin', 'status', 'isActive'])
-      );
+      allow create: if isSuperAdmin() || 
+        (isAuthenticated() && isSuperAdminEmail(request.auth.token.email)) ||
+        (request.resource.data.email != null && isSuperAdminEmail(request.resource.data.email)) || (
+          isOwner(userId) &&
+          (!('role' in request.resource.data) || request.resource.data.role == 'USER' || request.resource.data.role == null) &&
+          (!('isSuperAdmin' in request.resource.data) || request.resource.data.isSuperAdmin != true)
+        );
+      allow update: if isSuperAdmin() || 
+        (isAuthenticated() && isSuperAdminEmail(request.auth.token.email)) ||
+        (resource.data.email != null && isSuperAdminEmail(resource.data.email)) || (
+          isOwner(userId) &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'isSuperAdmin', 'status', 'isActive'])
+        );
       allow delete: if isSuperAdmin();
     }
 

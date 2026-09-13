@@ -39,7 +39,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loadUserProfile = async (firebaseUser: User, fallbackData?: { name?: string; country?: string; currency?: string }) => {
     try {
-      let existingProfile = await getUserProfile(firebaseUser.uid);
+      const emailHint = firebaseUser.email || firebaseUser.providerData?.[0]?.email;
+      let existingProfile = await getUserProfile(firebaseUser.uid, emailHint);
       if (!existingProfile) {
         existingProfile = await syncUserProfile(firebaseUser, {
           name: fallbackData?.name || firebaseUser.displayName || 'Founder',
@@ -122,6 +123,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const isSuperAdmin = Boolean(
     (user?.email && isPermanentSuperAdminEmail(user.email)) ||
+    user?.providerData?.some((p) => isPermanentSuperAdminEmail(p.email)) ||
     profile?.role === 'SUPER_ADMIN' ||
     (profile?.email && isPermanentSuperAdminEmail(profile.email))
   );

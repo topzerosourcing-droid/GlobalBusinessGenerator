@@ -57,14 +57,15 @@ export const logout = async () => {
 };
 
 // User Profile Firestore helpers
-export const getUserProfile = async (uid: string): Promise<UserProfile | null> => {
+export const getUserProfile = async (uid: string, emailHint?: string | null): Promise<UserProfile | null> => {
   try {
     const userDocRef = doc(db, 'users', uid);
     const snap = await getDoc(userDocRef);
     if (snap.exists()) {
       const data = snap.data() as UserProfile;
+      const targetEmail = data.email || emailHint || auth.currentUser?.email || auth.currentUser?.providerData?.[0]?.email;
       // Auto-upgrade permanent super admin if needed
-      if (isPermanentSuperAdminEmail(data.email) && (data.role !== 'SUPER_ADMIN' || data.tier !== 'enterprise' || data.status !== 'active')) {
+      if (isPermanentSuperAdminEmail(targetEmail) && (data.role !== 'SUPER_ADMIN' || data.tier !== 'enterprise' || data.status !== 'active')) {
         const upgraded: Partial<UserProfile> = {
           role: 'SUPER_ADMIN',
           tier: 'enterprise',
@@ -76,7 +77,7 @@ export const getUserProfile = async (uid: string): Promise<UserProfile | null> =
         try {
           await setDoc(doc(db, 'super_admins', uid), {
             uid,
-            email: data.email,
+            email: targetEmail || data.email,
             role: 'SUPER_ADMIN',
             verifiedAt: new Date().toISOString()
           }, { merge: true });
@@ -100,7 +101,8 @@ export const syncUserProfile = async (
 ): Promise<UserProfile> => {
   const userDocRef = doc(db, 'users', user.uid);
   const snap = await getDoc(userDocRef);
-  const isSuperAdmin = isPermanentSuperAdminEmail(user.email);
+  const resolvedEmail = user.email || user.providerData?.find(p => p.email)?.email || '';
+  const isSuperAdmin = isPermanentSuperAdminEmail(resolvedEmail);
 
   // Check if there was an active referral in localStorage
   const activeReferral = typeof window !== 'undefined' 
@@ -123,7 +125,7 @@ export const syncUserProfile = async (
       try {
         await setDoc(doc(db, 'super_admins', user.uid), {
           uid: user.uid,
-          email: user.email,
+          email: resolvedEmail || user.email,
           role: 'SUPER_ADMIN',
           verifiedAt: new Date().toISOString()
         }, { merge: true });

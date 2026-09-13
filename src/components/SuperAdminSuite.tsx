@@ -946,6 +946,29 @@ export const SuperAdminSuite: React.FC<SuperAdminSuiteProps> = ({ onOpenPlan }) 
 
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 space-y-2">
                 <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700">Firebase Auth Authorized Domains</span>
+                  <span className="rounded-full bg-amber-100 text-amber-800 text-[10px] font-black px-2 py-0.5">
+                    PROJECT CONSOLE
+                  </span>
+                </div>
+                <div className="text-xs text-slate-600 space-y-1">
+                  <div>Vercel Domain: <span className="font-mono text-indigo-700 font-semibold">globalbusinessgenerator.vercel.app</span></div>
+                  <div>Project ID: <span className="font-mono">airy-formula-p6shk</span></div>
+                  <div className="pt-1">
+                    <a
+                      href="https://console.firebase.google.com/project/airy-formula-p6shk/authentication/settings"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold underline"
+                    >
+                      Open Firebase Console &rarr; Add Authorized Domain
+                    </a>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 space-y-2">
+                <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-slate-700">PayPal Production Gateway</span>
                   <span className="rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-black px-2 py-0.5">
                     LIVE READY

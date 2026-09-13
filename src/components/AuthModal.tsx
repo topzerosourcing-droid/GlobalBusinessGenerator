@@ -61,7 +61,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       onSuccess?.();
     } catch (err: any) {
       console.error(err);
-      setError(err?.message?.replace('Firebase: ', '') || 'Failed to authenticate with Google.');
+      const rawMsg = err?.message || '';
+      if (rawMsg.includes('auth/unauthorized-domain')) {
+        setError(
+          'This domain (globalbusinessgenerator.vercel.app) is pending authorization in the Firebase Console. Go to Firebase Console > Authentication > Settings > Authorized Domains and add globalbusinessgenerator.vercel.app.'
+        );
+      } else {
+        setError(err?.message?.replace('Firebase: ', '') || 'Failed to authenticate with Google.');
+      }
     } finally {
       setLoading(false);
     }
