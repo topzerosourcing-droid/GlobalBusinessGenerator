@@ -136,25 +136,39 @@ class PayPalGatewayAdapterImpl implements PaymentGatewayAdapter {
     if (this.configCache) {
       return this.configCache;
     }
+    const defaultClientId =
+      (import.meta as any).env?.VITE_PAYPAL_CLIENT_ID ||
+      'BAA91Azu3vaFjziWsSm5T7NSX5wJnThiLhaxYjTEj2AeXwNM1rczvO877jESgNhqvjOmycY3eulrZpJTXw';
+
     try {
-      const response = await fetch('/api/payments/config');
+      let response = await fetch('/api/payments/config');
+      if (!response.ok && response.status === 404) {
+        response = await fetch('/api/paypal/config');
+      }
       if (!response.ok) throw new Error(`Failed to load payment config: ${response.status}`);
       const data = await response.json();
+      if (!data.clientId) {
+        data.clientId = defaultClientId;
+      }
       this.configCache = data;
       return data;
-    } catch {
-      // Default live configuration fallback
-      return {
+    } catch (err) {
+      console.warn('[PaymentService] Using default PayPal Live configuration fallback:', err);
+      // Default live configuration fallback (safe client-side metadata)
+      const fallbackConfig: GatewayConfigResponse = {
         provider: 'paypal',
         mode: 'live',
         isConfigured: true,
         merchantEmail: 'topogabolekwe@gmail.com',
+        clientId: defaultClientId,
         currency: 'USD',
         packages: {
           pro: { id: 'pro', name: 'Pro Business Plan', priceUSD: 29, currency: 'USD' },
           investor: { id: 'investor', name: 'Investor / Funding Package', priceUSD: 69, currency: 'USD' }
         }
       };
+      this.configCache = fallbackConfig;
+      return fallbackConfig;
     }
   }
 
@@ -170,15 +184,33 @@ class PayPalGatewayAdapterImpl implements PaymentGatewayAdapter {
         cancelUrl: request.cancelUrl || (origin ? `${origin}/payment-cancel` : undefined),
       };
 
-      const response = await fetch('/api/payments/create-order', {
+      let response = await fetch('/api/payments/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
+      // If 404 on /api/payments, try /api/paypal/create-order or /api/create-order
+      if (response.status === 404) {
+        console.warn('[PaymentService] /api/payments/create-order returned 404, attempting fallback route /api/paypal/create-order...');
+        response = await fetch('/api/paypal/create-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
+
+      if (response.status === 404) {
+        response = await fetch('/api/create-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP error ${response.status}`);
+        throw new Error(errorData.error || errorData.message || `HTTP error ${response.status}`);
       }
       return await response.json();
     } catch (err: any) {

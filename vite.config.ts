@@ -9,16 +9,35 @@ import { adminRouter } from './src/server/adminRoutes.ts';
 function apiMiddlewarePlugin() {
   const apiApp = express();
   apiApp.use(express.json());
+  // Mount both /api/payments and /api/paypal to avoid 404 on any variant
   apiApp.use('/api/payments', paymentRouter);
+  apiApp.use('/api/paypal', paymentRouter);
   apiApp.use('/api/admin', adminRouter);
+
+  // Direct top-level aliases inside apiApp with express.json body parser
+  apiApp.post('/api/create-order', (req: any, res: any, next: any) => {
+    req.url = '/create-order';
+    paymentRouter(req, res, next);
+  });
+  apiApp.post('/api/capture-order', (req: any, res: any, next: any) => {
+    req.url = '/capture-order';
+    paymentRouter(req, res, next);
+  });
 
   return {
     name: 'api-server-middleware',
     configureServer(server: any) {
       server.middlewares.use((req: any, res: any, next: any) => {
-        if (req.url && (req.url.startsWith('/api/payments') || req.url.startsWith('/api/admin'))) {
+        if (req.url && (
+          req.url.startsWith('/api/payments') || 
+          req.url.startsWith('/api/paypal') || 
+          req.url.startsWith('/api/admin') ||
+          req.url.startsWith('/api/create-order') ||
+          req.url.startsWith('/api/capture-order')
+        )) {
           return apiApp(req, res, next);
         }
+
         next();
       });
 
@@ -108,6 +127,13 @@ function apiMiddlewarePlugin() {
 
 export default defineConfig(() => {
   return {
+    define: {
+      'import.meta.env.VITE_PAYPAL_CLIENT_ID': JSON.stringify(
+        process.env.VITE_PAYPAL_CLIENT_ID ||
+        process.env.PAYPAL_CLIENT_ID ||
+        'BAA91Azu3vaFjziWsSm5T7NSX5wJnThiLhaxYjTEj2AeXwNM1rczvO877jESgNhqvjOmycY3eulrZpJTXw'
+      ),
+    },
     plugins: [react(), tailwindcss(), apiMiddlewarePlugin()],
     resolve: {
       alias: {

@@ -7,11 +7,11 @@ import {
   AlertCircle, 
   Receipt, 
   Download, 
-  ExternalLink,
   ShieldCheck,
   RotateCcw,
   Loader2,
-  FileText
+  FileText,
+  RefreshCw
 } from 'lucide-react';
 import { PlanPackageId, ProductPackage, PlanEntitlement, BusinessPlan } from '../types';
 import { PRODUCT_PACKAGES, createProEntitlement, createInvestorEntitlement } from '../services/entitlementService';
@@ -33,36 +33,57 @@ interface CheckoutModalProps {
 
 type CheckoutStep = 'checkout' | 'capturing' | 'success';
 
-// Helper to dynamically load the official PayPal JavaScript SDK
-const loadPayPalSdk = (clientId: string): Promise<any> => {
+// Helper to dynamically load the official PayPal JavaScript SDK (Strictly LIVE production)
+const loadPayPalSdk = (clientId: string, forceReload = false): Promise<any> => {
   return new Promise((resolve, reject) => {
-    if ((window as any).paypal?.Buttons) {
+    if (!clientId || clientId.trim() === '' || clientId === 'undefined') {
+      reject(new Error('PayPal Client ID is not configured.'));
+      return;
+    }
+
+    const trimmedClientId = clientId.trim();
+
+    // If SDK is already available and no force reload requested, return immediately
+    if (!forceReload && (window as any).paypal?.Buttons) {
       resolve((window as any).paypal);
       return;
     }
-    const existing = document.getElementById('paypal-sdk-script') as HTMLScriptElement;
+
+    // Clean up any existing script tag when force reloading or re-initializing
+    const existing = document.getElementById('paypal-sdk-script') as HTMLScriptElement | null;
     if (existing) {
-      if ((window as any).paypal?.Buttons) {
+      if (!forceReload && (window as any).paypal?.Buttons) {
         resolve((window as any).paypal);
-      } else {
-        existing.addEventListener('load', () => resolve((window as any).paypal));
-        existing.addEventListener('error', () => reject(new Error('Failed to load PayPal SDK script')));
+        return;
       }
-      return;
+      existing.remove();
     }
+
     const script = document.createElement('script');
     script.id = 'paypal-sdk-script';
-    script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(clientId)}&currency=USD&intent=capture&components=buttons`;
+    // Strictly official PayPal LIVE JavaScript SDK URL
+    script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(trimmedClientId)}&currency=USD&intent=capture&components=buttons`;
     script.async = true;
+
+    const timeout = setTimeout(() => {
+      reject(new Error('PayPal SDK network request timed out.'));
+    }, 15000);
+
     script.onload = () => {
+      clearTimeout(timeout);
       if ((window as any).paypal?.Buttons) {
         resolve((window as any).paypal);
       } else {
-        reject(new Error('PayPal SDK script loaded without Buttons component'));
+        reject(new Error('PayPal SDK loaded but Buttons component was not found.'));
       }
     };
-    script.onerror = () => reject(new Error('Network error loading PayPal JavaScript SDK'));
-    document.body.appendChild(script);
+
+    script.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error('Network error loading official PayPal JavaScript SDK.'));
+    };
+
+    document.head.appendChild(script);
   });
 };
 
@@ -82,7 +103,21 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [gatewayConfig, setGatewayConfig] = useState<GatewayConfigResponse | null>(null);
   const [isSdkLoading, setIsSdkLoading] = useState<boolean>(false);
+  const [sdkLoadError, setSdkLoadError] = useState<string | null>(null);
+  const [retryTrigger, setRetryTrigger] = useState<number>(0);
   const [isCapturing, setIsCapturing] = useState<boolean>(false);
+
+  // Fallback / direct Live Client ID ensures SDK initializes reliably without 404
+  const effectiveClientId =
+    gatewayConfig?.clientId ||
+    (import.meta as any).env?.VITE_PAYPAL_CLIENT_ID ||
+    'BAA91Azu3vaFjziWsSm5T7NSX5wJnThiLhaxYjTEj2AeXwNM1rczvO877jESgNhqvjOmycY3eulrZpJTXw';
+
+  const handleRetrySdkLoad = () => {
+    setSdkLoadError(null);
+    setErrorMessage(null);
+    setRetryTrigger(prev => prev + 1);
+  };
 
   // Active transaction details
   const [currentOrderId, setCurrentOrderId] = useState<string | null>(null);
@@ -218,24 +253,21 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   };
 
   /**
-   * Render Official PayPal Buttons (directly into the checkout card)
+   * Render Official PayPal Live Buttons (strictly official PayPal JS SDK & Buttons component)
    */
   useEffect(() => {
     if (!isOpen || step !== 'checkout') return;
 
     let isMounted = true;
-    const clientId = gatewayConfig?.clientId;
-
-    if (!clientId) {
-      return;
-    }
-
+    setSdkLoadError(null);
+    setErrorMessage(null);
     setIsSdkLoading(true);
 
-    loadPayPalSdk(clientId)
+    loadPayPalSdk(effectiveClientId, retryTrigger > 0)
       .then((paypal) => {
         if (!isMounted || !paypalButtonContainerRef.current) return;
         setIsSdkLoading(false);
+        setSdkLoadError(null);
 
         // Clear existing button DOM
         paypalButtonContainerRef.current.innerHTML = '';
@@ -253,7 +285,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               setErrorMessage(null);
               const currentPkg = PRODUCT_PACKAGES[activePackageIdRef.current] || PRODUCT_PACKAGES.pro;
 
-              // Immediately create PayPal Live order on server
+              // 1. Internal order created on server via /api/payments/create-order
               const orderRes = await paymentGateway.createOrder({
                 userId: userId || 'guest_user',
                 planId: plan.id,
@@ -292,7 +324,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 console.debug('[Checkout] Firestore order log deferred:', fsErr);
               }
 
-              // Return PayPal's order ID directly to PayPal SDK to open approval window
+              // 2. Return PayPal's order ID directly to PayPal SDK to open the official approval modal
               return orderRes.providerOrderId;
             },
             onApprove: async (data: any) => {
@@ -309,58 +341,28 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
             },
             onError: (err: any) => {
               console.error('[PayPal SDK Error]:', err);
-              setErrorMessage('PayPal encountered a connection issue. You may retry or use direct checkout.');
+              setErrorMessage('PayPal encountered a connection issue. Please click retry below or try again.');
             }
           }).render(paypalButtonContainerRef.current);
-        } catch (renderErr) {
+        } catch (renderErr: any) {
           console.warn('[PayPal SDK] Render warning:', renderErr);
+          if (isMounted) {
+            setIsSdkLoading(false);
+            setSdkLoadError('PayPal is temporarily unavailable');
+          }
         }
       })
       .catch((err) => {
         if (!isMounted) return;
         setIsSdkLoading(false);
         console.warn('[PayPal SDK] Initialization notice:', err.message);
+        setSdkLoadError('PayPal is temporarily unavailable');
       });
 
     return () => {
       isMounted = false;
     };
-  }, [isOpen, gatewayConfig?.clientId, activePackageId, step]);
-
-  /**
-   * Direct PayPal Approval Window (Fallback for popup blockers or direct link preference)
-   */
-  const handleLaunchDirectApproval = async () => {
-    setErrorMessage(null);
-    setIsCapturing(true);
-
-    try {
-      const orderRes = await paymentGateway.createOrder({
-        userId: userId || 'guest_user',
-        planId: plan.id,
-        productPackage: activePackageId as 'pro' | 'investor',
-        amount: pkg.priceUSD,
-        currency: 'USD',
-        customerEmail: userEmail || merchantEmail,
-        paymentProvider: 'paypal'
-      });
-
-      if (!orderRes.success || !orderRes.orderId) {
-        throw new Error(orderRes.message || 'Could not initialize PayPal order.');
-      }
-
-      setCurrentOrderId(orderRes.orderId);
-      setCurrentPayPalOrderId(orderRes.providerOrderId || null);
-
-      if (orderRes.approvalUrl) {
-        window.open(orderRes.approvalUrl, '_blank', 'noopener,noreferrer');
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Could not open PayPal approval window.');
-    } finally {
-      setIsCapturing(false);
-    }
-  };
+  }, [isOpen, effectiveClientId, activePackageId, step, retryTrigger]);
 
   /**
    * Safe Navigation Cancel: Returns user to business plan without penalty
@@ -491,7 +493,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               </div>
 
               {/* Alert / Notice if any */}
-              {errorMessage && (
+              {errorMessage && !sdkLoadError && (
                 <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start space-x-2">
                   <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                   <span>{errorMessage}</span>
@@ -505,30 +507,44 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 </label>
 
                 <div className="min-h-[90px] relative">
+                  {/* Loading State */}
                   {isSdkLoading && (
                     <div className="flex items-center justify-center p-6 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-500 space-x-2">
                       <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-                      <span>Loading secure PayPal checkout...</span>
+                      <span>Loading official PayPal Live checkout...</span>
                     </div>
                   )}
 
+                  {/* SDK Load Error & Retry UI */}
+                  {sdkLoadError && !isSdkLoading && (
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
+                      <div className="flex items-start space-x-2 text-xs text-amber-800">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-bold text-amber-900">PayPal is temporarily unavailable</p>
+                          <p className="text-amber-700 mt-0.5">
+                            Could not connect to the official PayPal Live service. Please check your network connection and retry.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        id="btn-retry-paypal-checkout"
+                        onClick={handleRetrySdkLoad}
+                        className="w-full inline-flex items-center justify-center space-x-2 py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition cursor-pointer shadow-xs"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Retry PayPal Checkout</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Official PayPal Buttons Container */}
                   <div 
                     id="paypal-button-container" 
                     ref={paypalButtonContainerRef}
-                    className="w-full relative z-10"
+                    className={`w-full relative z-10 ${sdkLoadError || isSdkLoading ? 'hidden' : 'block'}`}
                   />
-                </div>
-
-                {/* Direct Popup Launcher (Optional link for convenience) */}
-                <div className="text-center pt-1">
-                  <button
-                    type="button"
-                    onClick={handleLaunchDirectApproval}
-                    className="text-xs text-slate-500 hover:text-blue-700 inline-flex items-center space-x-1 underline cursor-pointer"
-                  >
-                    <span>Having trouble? Open PayPal in a new tab</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </button>
                 </div>
               </div>
 

@@ -21,8 +21,20 @@ const port = 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
-// Mount Payment & Entitlement Engine
+// Mount Payment & Entitlement Engine (both /api/payments and /api/paypal)
 app.use('/api/payments', paymentRouter);
+app.use('/api/paypal', paymentRouter);
+
+// Top-level order endpoints to prevent 404
+app.post('/api/create-order', (req, res, next) => {
+  req.url = '/create-order';
+  paymentRouter(req, res, next);
+});
+app.post('/api/capture-order', (req, res, next) => {
+  req.url = '/capture-order';
+  paymentRouter(req, res, next);
+});
+
 // Mount Super Admin Engine
 app.use('/api/admin', adminRouter);
 app.get('/api/admin/orders-summary', (req, res) => {
@@ -94,6 +106,11 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(distPath, 'index.html'));
 });
 
-app.listen(port, () => {
-  console.log(`Global Business Generator server running on port ${port}`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(port, () => {
+    console.log(`Global Business Generator server running on port ${port}`);
+  });
+}
+
+export default app;
+export { app };
