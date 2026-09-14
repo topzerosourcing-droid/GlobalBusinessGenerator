@@ -180,6 +180,118 @@ function generateVerificationToken(userId: string, planId: string, packageId: st
 }
 
 /**
+ * Helper: dynamically resolve base URL of the currently running application.
+ * Honors x-forwarded-proto, x-forwarded-host, host headers, APP_URL, PUBLIC_APP_URL, and VERCEL_URL.
+ */
+export function getRequestBaseUrl(req: express.Request): string {
+  const forwardedProto = req.headers['x-forwarded-proto'] as string;
+  const forwardedHost = req.headers['x-forwarded-host'] as string;
+  if (forwardedHost) {
+    const proto = forwardedProto ? forwardedProto.split(',')[0].trim() : (req.secure ? 'https' : 'http');
+    return `${proto}://${forwardedHost.split(',')[0].trim()}`;
+  }
+
+  const host = req.get('host');
+  if (host) {
+    const proto = (req.secure || forwardedProto === 'https') ? 'https' : 'http';
+    return `${proto}://${host}`;
+  }
+
+  if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, '');
+  if (process.env.PUBLIC_APP_URL) return process.env.PUBLIC_APP_URL.replace(/\/$/, '');
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL.replace(/\/$/, '')}`;
+
+  return 'http://localhost:3000';
+}
+
+/**
+ * Helper: Find an order across memory by orderId, providerOrderId (PayPal ID/token),
+ * or providerTransactionId. If not found in memory (e.g. after server reboot),
+ * query PayPal Live directly to reconstruct and restore the order.
+ */
+export async function findOrder(idOrToken?: string): Promise<ServerOrder | undefined> {
+  if (!idOrToken) return undefined;
+  const trimmed = idOrToken.trim();
+
+  // 1. Direct key match in ordersStore
+  if (ordersStore.has(trimmed)) {
+    return ordersStore.get(trimmed);
+  }
+
+  // 2. Scan values for matching internal orderId, providerOrderId, or transactionId
+  for (const ord of ordersStore.values()) {
+    if (ord.orderId === trimmed || ord.providerOrderId === trimmed || ord.providerTransactionId === trimmed) {
+      return ord;
+    }
+  }
+
+  // 3. Fallback: Reconstruct order from PayPal Live API if it's a PayPal Order ID/Token
+  try {
+    const liveDetails = await paypalClient.getOrderDetails(trimmed);
+    if (liveDetails && liveDetails.id) {
+      const pu = liveDetails.purchase_units?.[0];
+      let customData: any = {};
+      try {
+        if (pu?.custom_id) {
+          customData = JSON.parse(pu.custom_id);
+        }
+      } catch {}
+
+      const recoveredOrderId = customData.internalOrderId || pu?.reference_id || `ORD-${liveDetails.id}`;
+      const amountVal = parseFloat(pu?.amount?.value || '29');
+      const recoveredPackage: 'pro' | 'investor' = (customData.productPackage || (amountVal >= 60 ? 'investor' : 'pro'));
+      const recoveredAmount = recoveredPackage === 'investor' ? 69 : 29;
+
+      const existingCapture = pu?.payments?.captures?.[0];
+      const captureId = existingCapture?.id;
+
+      const isPaid = liveDetails.status === 'COMPLETED' || !!captureId;
+      const now = new Date().toISOString();
+
+      const recoveredOrder: ServerOrder = {
+        orderId: recoveredOrderId,
+        userId: customData.userId || 'customer',
+        planId: customData.planId || 'default_plan',
+        productPackage: recoveredPackage,
+        amount: recoveredAmount,
+        currency: pu?.amount?.currency_code || 'USD',
+        status: isPaid ? 'paid' : (liveDetails.status === 'APPROVED' ? 'payment_pending' : 'pending'),
+        createdAt: liveDetails.create_time || now,
+        updatedAt: now,
+        paymentProvider: 'paypal',
+        providerOrderId: liveDetails.id,
+        providerTransactionId: captureId,
+        customerEmail: liveDetails.payer?.email_address || customData.customerEmail || paypalClient.getMerchantEmail()
+      };
+
+      ordersStore.set(recoveredOrderId, recoveredOrder);
+      ordersStore.set(liveDetails.id, recoveredOrder);
+
+      if (isPaid && captureId) {
+        const token = generateVerificationToken(recoveredOrder.userId, recoveredOrder.planId, recoveredOrder.productPackage, recoveredOrder.orderId);
+        entitlementsStore.set(`ent_${recoveredOrder.planId}`, {
+          id: `ent_${recoveredOrder.planId}`,
+          userId: recoveredOrder.userId,
+          planId: recoveredOrder.planId,
+          packageId: recoveredOrder.productPackage,
+          status: 'active',
+          grantedAt: recoveredOrder.createdAt,
+          orderId: recoveredOrder.orderId,
+          verificationToken: token
+        });
+      }
+
+      console.log(`[Payment Router] Successfully recovered order ${recoveredOrderId} (PayPal ${liveDetails.id}, status: ${liveDetails.status})`);
+      return recoveredOrder;
+    }
+  } catch (err: any) {
+    console.debug(`[Payment Router] Order recovery check for "${trimmed}":`, err.message);
+  }
+
+  return undefined;
+}
+
+/**
  * 0. GET /api/payments/config: Return client-safe configuration
  */
 paymentRouter.get('/config', (req, res) => {
@@ -231,7 +343,7 @@ paymentRouter.get('/production-check', async (req, res) => {
 paymentRouter.get('/order-status/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
-    const order = ordersStore.get(orderId);
+    const order = await findOrder(orderId);
     if (!order) {
       return res.status(404).json({ error: `Order ${orderId} not found` });
     }
@@ -274,6 +386,7 @@ paymentRouter.get('/order-status/:orderId', async (req, res) => {
  * SECURITY:
  * - Server strictly determines product price ($29 or $69 USD) from product catalog.
  * - Client cannot forge amount, currency, or package.
+ * - Dynamically constructs valid return_url and cancel_url pointing to the actual deployed app.
  */
 paymentRouter.post('/create-order', async (req, res) => {
   try {
@@ -298,6 +411,11 @@ paymentRouter.post('/create-order', async (req, res) => {
     // Generate internal order ID
     const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
 
+    // Resolve actual base URL of application for return and cancel flows
+    const baseUrl = getRequestBaseUrl(req);
+    const targetReturnUrl = returnUrl || `${baseUrl}/payment-return?orderId=${encodeURIComponent(orderId)}&planId=${encodeURIComponent(planId)}`;
+    const targetCancelUrl = cancelUrl || `${baseUrl}/payment-cancel?orderId=${encodeURIComponent(orderId)}&planId=${encodeURIComponent(planId)}`;
+
     // Create order in PayPal via server client
     const paypalResult = await paypalClient.createOrder({
       internalOrderId: orderId,
@@ -307,8 +425,8 @@ paymentRouter.post('/create-order', async (req, res) => {
       amount,
       currency,
       customerEmail,
-      returnUrl,
-      cancelUrl,
+      returnUrl: targetReturnUrl,
+      cancelUrl: targetCancelUrl,
     });
 
     const now = new Date().toISOString();
@@ -327,9 +445,13 @@ paymentRouter.post('/create-order', async (req, res) => {
       customerEmail: customerEmail || paypalClient.getMerchantEmail()
     };
 
+    // Index by both internal orderId and PayPal order ID
     ordersStore.set(orderId, newOrder);
+    if (newOrder.providerOrderId) {
+      ordersStore.set(newOrder.providerOrderId, newOrder);
+    }
 
-    console.log(`[Payment Router] Created pending order ${orderId} with PayPal ID ${paypalResult.paypalOrderId}`);
+    console.log(`[Payment Router] Created pending order ${orderId} with PayPal ID ${paypalResult.paypalOrderId} (Return: ${targetReturnUrl})`);
 
     res.json({
       success: true,
@@ -341,6 +463,8 @@ paymentRouter.post('/create-order', async (req, res) => {
       currency,
       productPackage,
       mode: paypalClient.getMode(),
+      returnUrl: targetReturnUrl,
+      cancelUrl: targetCancelUrl,
       message: 'Order created with PayPal and pending authorization'
     });
   } catch (err: any) {
@@ -362,13 +486,15 @@ paymentRouter.post('/capture-order', async (req, res) => {
   try {
     const { orderId, providerOrderId } = req.body;
 
-    if (!orderId) {
-      return res.status(400).json({ error: 'Missing required orderId' });
+    const lookupKey = orderId || providerOrderId;
+    if (!lookupKey) {
+      return res.status(400).json({ error: 'Missing required orderId or providerOrderId' });
     }
 
-    const order = ordersStore.get(orderId);
+    // Attempt lookup by orderId or providerOrderId (with live PayPal order recovery if needed)
+    let order = await findOrder(orderId) || await findOrder(providerOrderId);
     if (!order) {
-      return res.status(404).json({ error: `Order ${orderId} not found` });
+      return res.status(404).json({ error: `Order ${lookupKey} not found` });
     }
 
     // IDEMPOTENCY CHECK: If already paid, return existing verified entitlement
@@ -376,7 +502,7 @@ paymentRouter.post('/capture-order', async (req, res) => {
       const existingToken = generateVerificationToken(order.userId, order.planId, order.productPackage, order.orderId);
       const existingEntitlement = entitlementsStore.get(`ent_${order.planId}`);
 
-      console.log(`[Payment Router] Idempotent request: Order ${orderId} is already paid.`);
+      console.log(`[Payment Router] Idempotent request: Order ${order.orderId} is already paid.`);
       return res.json({
         success: true,
         alreadyCaptured: true,
@@ -396,7 +522,7 @@ paymentRouter.post('/capture-order', async (req, res) => {
     }
 
     // MANDATORY AUDIT REQUIREMENT: Verify buyer approval with PayPal Live before executing capture
-    console.log(`[Payment Router] Verifying PayPal buyer approval for order ${orderId} (${paypalOrderIdToCapture})...`);
+    console.log(`[Payment Router] Verifying PayPal buyer approval for order ${order.orderId} (${paypalOrderIdToCapture})...`);
     let orderDetails: any;
     try {
       orderDetails = await paypalClient.getOrderDetails(paypalOrderIdToCapture);
@@ -417,7 +543,7 @@ paymentRouter.post('/capture-order', async (req, res) => {
         success: false,
         requiresBuyerApproval: true,
         paypalStatus: liveStatus,
-        orderId,
+        orderId: order.orderId,
         error: `PayPal order has not yet been approved by the customer (status: ${liveStatus}). Buyer approval is strictly required before capture.`
       });
     }
@@ -432,7 +558,8 @@ paymentRouter.post('/capture-order', async (req, res) => {
       order.updatedAt = now;
       order.providerTransactionId = captureId;
       order.providerOrderId = paypalOrderIdToCapture;
-      ordersStore.set(orderId, order);
+      ordersStore.set(order.orderId, order);
+      ordersStore.set(paypalOrderIdToCapture, order);
 
       const verificationToken = generateVerificationToken(order.userId, order.planId, order.productPackage, order.orderId);
       const entitlementId = `ent_${order.planId}`;
@@ -443,14 +570,14 @@ paymentRouter.post('/capture-order', async (req, res) => {
         packageId: order.productPackage,
         status: 'active',
         grantedAt: now,
-        orderId,
+        orderId: order.orderId,
         verificationToken
       };
       entitlementsStore.set(entitlementId, entitlement);
 
       return res.json({
         success: true,
-        orderId,
+        orderId: order.orderId,
         transactionId: captureId,
         packageId: order.productPackage,
         verificationToken,
@@ -474,14 +601,15 @@ paymentRouter.post('/capture-order', async (req, res) => {
     const captureResult = await paypalClient.captureOrder(paypalOrderIdToCapture);
 
     if (!captureResult.success) {
-      console.warn(`[Payment Router] PayPal capture rejected for order ${orderId}: ${captureResult.error}`);
+      console.warn(`[Payment Router] PayPal capture rejected for order ${order.orderId}: ${captureResult.error}`);
       order.status = 'failed';
       order.updatedAt = new Date().toISOString();
-      ordersStore.set(orderId, order);
+      ordersStore.set(order.orderId, order);
+      ordersStore.set(paypalOrderIdToCapture, order);
 
       return res.status(400).json({
         success: false,
-        orderId,
+        orderId: order.orderId,
         status: 'failed',
         error: captureResult.error || 'Payment capture was declined or failed in PayPal.'
       });
@@ -492,7 +620,8 @@ paymentRouter.post('/capture-order', async (req, res) => {
     if (captureResult.status !== 'COMPLETED') {
       order.status = 'failed';
       order.updatedAt = new Date().toISOString();
-      ordersStore.set(orderId, order);
+      ordersStore.set(order.orderId, order);
+      ordersStore.set(paypalOrderIdToCapture, order);
       return res.status(400).json({
         success: false,
         error: `PayPal payment status is ${captureResult.status}, expected COMPLETED.`
@@ -516,13 +645,14 @@ paymentRouter.post('/capture-order', async (req, res) => {
     order.updatedAt = now;
     order.providerTransactionId = transactionId;
     order.providerOrderId = paypalOrderIdToCapture;
-    ordersStore.set(orderId, order);
+    ordersStore.set(order.orderId, order);
+    ordersStore.set(paypalOrderIdToCapture, order);
 
     // 2. Store verified payment record
     const paymentId = `PAY-${Date.now().toString(36).toUpperCase()}`;
     const payment: ServerPayment = {
       id: paymentId,
-      orderId,
+      orderId: order.orderId,
       userId: order.userId,
       planId: order.planId,
       amount: order.amount,
@@ -546,16 +676,16 @@ paymentRouter.post('/capture-order', async (req, res) => {
       packageId: order.productPackage,
       status: 'active',
       grantedAt: now,
-      orderId,
+      orderId: order.orderId,
       verificationToken
     };
     entitlementsStore.set(entitlementId, entitlement);
 
-    console.log(`[Payment Router] Order ${orderId} successfully captured & verified. Transaction ID: ${transactionId}`);
+    console.log(`[Payment Router] Order ${order.orderId} successfully captured & verified. Transaction ID: ${transactionId}`);
 
     res.json({
       success: true,
-      orderId,
+      orderId: order.orderId,
       transactionId,
       packageId: order.productPackage,
       verificationToken,
@@ -570,30 +700,84 @@ paymentRouter.post('/capture-order', async (req, res) => {
 });
 
 /**
- * 3. POST /api/payments/cancel-order: Customer cancelled checkout
+ * 2b. GET /api/payments/lookup-order: Query order by either internal orderId or PayPal token/providerOrderId
  */
-paymentRouter.post('/cancel-order', (req, res) => {
+paymentRouter.get('/lookup-order', async (req, res) => {
   try {
-    const { orderId } = req.body;
-    if (!orderId) {
-      return res.status(400).json({ error: 'Missing orderId' });
+    const token = (req.query.token || req.query.providerOrderId || req.query.orderId) as string;
+    if (!token) {
+      return res.status(400).json({ error: 'Missing required query parameter: token or orderId' });
     }
 
-    const order = ordersStore.get(orderId);
+    const order = await findOrder(token);
     if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
+      return res.status(404).json({ error: `Order not found for identifier: ${token}` });
+    }
+
+    let paypalStatus = 'UNKNOWN';
+    let buyerApproved = false;
+    let isCompleted = order.status === 'paid' || order.status === 'completed';
+
+    if (order.providerOrderId) {
+      try {
+        const details = await paypalClient.getOrderDetails(order.providerOrderId);
+        paypalStatus = details.status || 'UNKNOWN';
+        buyerApproved = details.status === 'APPROVED';
+        if (details.status === 'COMPLETED') {
+          isCompleted = true;
+        }
+      } catch (err: any) {
+        console.warn(`[Payment Router] PayPal status query error for ${order.providerOrderId}:`, err.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      order,
+      orderId: order.orderId,
+      providerOrderId: order.providerOrderId,
+      status: order.status,
+      paypalStatus,
+      buyerApproved,
+      isCompleted,
+      amount: order.amount,
+      currency: order.currency,
+      packageId: order.productPackage,
+      planId: order.planId,
+      userId: order.userId
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to lookup order' });
+  }
+});
+
+/**
+ * 3. POST /api/payments/cancel-order: Customer cancelled checkout
+ */
+paymentRouter.post('/cancel-order', async (req, res) => {
+  try {
+    const { orderId, providerOrderId } = req.body;
+    const lookupKey = orderId || providerOrderId;
+    if (!lookupKey) {
+      return res.status(400).json({ error: 'Missing orderId or providerOrderId' });
+    }
+
+    const order = await findOrder(lookupKey);
+    if (!order) {
+      return res.status(404).json({ error: `Order ${lookupKey} not found` });
     }
 
     if (order.status === 'payment_pending' || order.status === 'pending') {
       order.status = 'cancelled';
       order.updatedAt = new Date().toISOString();
-      ordersStore.set(orderId, order);
-      console.log(`[Payment Router] Order ${orderId} marked as cancelled by customer.`);
+      ordersStore.set(order.orderId, order);
+      if (order.providerOrderId) ordersStore.set(order.providerOrderId, order);
+      console.log(`[Payment Router] Order ${order.orderId} marked as cancelled by customer.`);
     }
 
     res.json({
       success: true,
-      orderId,
+      orderId: order.orderId,
       status: order.status,
       message: 'Order status updated to cancelled. Customer may retry payment.'
     });
@@ -605,10 +789,10 @@ paymentRouter.post('/cancel-order', (req, res) => {
 /**
  * 4. POST /api/payments/verify-payment: Verify authenticity of payment/entitlement
  */
-paymentRouter.post('/verify-payment', (req, res) => {
+paymentRouter.post('/verify-payment', async (req, res) => {
   try {
     const { orderId, planId, token } = req.body;
-    const order = ordersStore.get(orderId);
+    const order = await findOrder(orderId);
     if (!order) {
       return res.status(404).json({ verified: false, error: 'Order not found' });
     }
@@ -807,9 +991,9 @@ paymentRouter.post('/refund-payment', requireSuperAdmin, (req, res) => {
 /**
  * 7. GET /api/payments/get-payment-status/:orderId: Query live status of an order
  */
-paymentRouter.get('/get-payment-status/:orderId', (req, res) => {
+paymentRouter.get('/get-payment-status/:orderId', async (req, res) => {
   const { orderId } = req.params;
-  const order = ordersStore.get(orderId);
+  const order = await findOrder(orderId);
   if (!order) {
     return res.status(404).json({ error: 'Order not found' });
   }

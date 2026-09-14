@@ -163,10 +163,17 @@ class PayPalGatewayAdapterImpl implements PaymentGatewayAdapter {
    */
   async createOrder(request: CreateOrderRequest): Promise<CreateOrderResponse> {
     try {
+      const origin = typeof window !== 'undefined' ? window.location.origin : '';
+      const payload: CreateOrderRequest = {
+        ...request,
+        returnUrl: request.returnUrl || (origin ? `${origin}/payment-return` : undefined),
+        cancelUrl: request.cancelUrl || (origin ? `${origin}/payment-cancel` : undefined),
+      };
+
       const response = await fetch('/api/payments/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -185,10 +192,11 @@ class PayPalGatewayAdapterImpl implements PaymentGatewayAdapter {
    */
   async captureOrder(orderId: string, providerOrderId?: string): Promise<CaptureOrderResponse> {
     try {
+      const effectiveOrderId = orderId || providerOrderId || '';
       const response = await fetch('/api/payments/capture-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId, providerOrderId }),
+        body: JSON.stringify({ orderId: effectiveOrderId, providerOrderId }),
       });
 
       const data = await response.json();
@@ -207,14 +215,33 @@ class PayPalGatewayAdapterImpl implements PaymentGatewayAdapter {
   }
 
   /**
+   * 2b. lookupOrder: Query order details by either internal orderId or PayPal token/providerOrderId
+   */
+  async lookupOrder(tokenOrOrderId: string): Promise<any> {
+    try {
+      const response = await fetch(`/api/payments/lookup-order?token=${encodeURIComponent(tokenOrOrderId)}`);
+      if (!response.ok) {
+        // Fallback to get-payment-status
+        const fallback = await fetch(`/api/payments/get-payment-status/${encodeURIComponent(tokenOrOrderId)}`);
+        if (fallback.ok) return await fallback.json();
+        return null;
+      }
+      return await response.json();
+    } catch (err: any) {
+      console.warn('[PaymentService] lookupOrder failed:', err);
+      return null;
+    }
+  }
+
+  /**
    * 3. cancelOrder: Notify server customer cancelled checkout
    */
-  async cancelOrder(orderId: string): Promise<{ success: boolean; orderId: string; status: string }> {
+  async cancelOrder(orderId: string, providerOrderId?: string): Promise<{ success: boolean; orderId: string; status: string }> {
     try {
       const response = await fetch('/api/payments/cancel-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId }),
+        body: JSON.stringify({ orderId, providerOrderId }),
       });
       return await response.json();
     } catch (err: any) {
@@ -377,6 +404,7 @@ class PayPalGatewayAdapterImpl implements PaymentGatewayAdapter {
 }
 
 export const paymentGateway = new PayPalGatewayAdapterImpl();
+export const paymentService = paymentGateway;
 
 export const FEATURE_PERMISSIONS = {
   EXPORT_PDF: ['pro', 'enterprise'],

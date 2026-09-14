@@ -105,12 +105,36 @@ export const stripUndefined = <T extends Record<string, any>>(obj: T): Partial<T
 export const getUserProfile = async (uid: string, emailHint?: string | null): Promise<UserProfile | null> => {
   if (!uid) return null;
 
-  // 1. If navigator indicates offline, immediately return cached profile if available
+  // 1. Guard against querying Firestore when browser is offline
   const isOfflineBrowser = typeof navigator !== 'undefined' && !navigator.onLine;
   const cached = getCachedUserProfile(uid);
 
-  if (isOfflineBrowser && cached) {
-    return { ...cached, _isOfflineFallback: true } as UserProfile;
+  if (isOfflineBrowser) {
+    if (cached) {
+      return { ...cached, _isOfflineFallback: true } as UserProfile;
+    }
+    const currentUser = auth.currentUser;
+    const targetEmail = currentUser?.email || emailHint || '';
+    const isSuperAdmin = isPermanentSuperAdminEmail(targetEmail);
+    const provisional: UserProfile = {
+      uid,
+      name: currentUser?.displayName || targetEmail.split('@')[0] || 'Entrepreneur',
+      email: targetEmail,
+      country: 'United States',
+      preferredCurrency: 'USD',
+      createdAt: new Date().toISOString(),
+      tier: isSuperAdmin ? 'enterprise' : 'free',
+      role: isSuperAdmin ? 'SUPER_ADMIN' : 'USER',
+      status: 'active',
+      isActive: true,
+      businessPlansCount: 0,
+      referralClicksCount: 0,
+      referralSignupsCount: 0,
+      referralConversionsCount: 0,
+      _isOfflineFallback: true,
+    } as any;
+    setCachedUserProfile(provisional);
+    return provisional;
   }
 
   try {
@@ -187,6 +211,7 @@ export const getUserProfile = async (uid: string, emailHint?: string | null): Pr
         referralConversionsCount: 0,
         _isOfflineFallback: true,
       } as any;
+      setCachedUserProfile(fallback);
       return fallback;
     }
 

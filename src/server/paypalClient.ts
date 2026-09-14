@@ -256,8 +256,8 @@ class PayPalClient {
           landing_page: 'NO_PREFERENCE',
           user_action: 'PAY_NOW',
           shipping_preference: 'NO_SHIPPING',
-          return_url: returnUrl || 'https://globalbusinessgenerator.com/payment-success',
-          cancel_url: cancelUrl || 'https://globalbusinessgenerator.com/payment-cancelled',
+          return_url: returnUrl || `${process.env.APP_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000'}/payment-return`,
+          cancel_url: cancelUrl || `${process.env.APP_URL || process.env.PUBLIC_APP_URL || 'http://localhost:3000'}/payment-cancel`,
         }
       };
 

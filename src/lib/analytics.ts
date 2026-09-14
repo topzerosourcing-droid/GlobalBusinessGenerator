@@ -192,11 +192,19 @@ export async function trackAnalyticsEvent(
 
   // 6. Also log to Google Analytics if available
   try {
-    if (analytics) {
-      logEvent(analytics, eventType, cleanMetadata);
+    if (analytics && typeof navigator !== 'undefined' && navigator.onLine) {
+      const safeEvent = eventType.replace(/[^a-zA-Z0-9_]/g, '_').substring(0, 40);
+      const safeParams: Record<string, string | number> = {};
+      for (const [k, v] of Object.entries(cleanMetadata || {})) {
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+          const safeKey = k.replace(/[^a-zA-Z0-9_]/g, '_').substring(0, 40);
+          safeParams[safeKey] = typeof v === 'boolean' ? (v ? 1 : 0) : v;
+        }
+      }
+      logEvent(analytics, safeEvent, safeParams);
     }
   } catch {
-    // Non-fatal
+    // Non-fatal, suppress all analytics errors silently
   }
 }
 

@@ -6,6 +6,7 @@ import { DashboardLayout, DashboardTab } from './components/DashboardLayout';
 import { AuthModal } from './components/AuthModal';
 import { PublicPlanView } from './components/PublicPlanView';
 import { BusinessIdeasDirectory } from './components/BusinessIdeasDirectory';
+import { PayPalReturnView } from './components/PayPalReturnView';
 import { CuratedBusinessIdea } from './types';
 import { captureReferralFromUrl, getActiveReferralCode } from './lib/referralService';
 import { Analytics } from './lib/analytics';
@@ -13,7 +14,23 @@ import { Analytics } from './lib/analytics';
 function MainApp() {
   const { user, profile, loading } = useAuth();
 
-  const [currentView, setCurrentView] = useState<'landing' | 'dashboard' | 'public_plan' | 'ideas_directory'>('landing');
+  const [currentView, setCurrentView] = useState<'landing' | 'dashboard' | 'public_plan' | 'ideas_directory' | 'payment_return'>(() => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      const hash = window.location.hash;
+      const search = window.location.search;
+      if (
+        path.startsWith('/payment-return') || 
+        path.startsWith('/payment-cancel') ||
+        hash.startsWith('#payment-return') ||
+        hash.startsWith('#payment-cancel') ||
+        (search.includes('token=') && (search.includes('PayerID=') || search.includes('orderId=')))
+      ) {
+        return 'payment_return';
+      }
+    }
+    return 'landing';
+  });
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>('create');
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
@@ -30,9 +47,23 @@ function MainApp() {
       Analytics.referralClick(detectedRef, window.location.pathname);
     }
 
-    // Check hash for public plan or idea navigation
-    const handleHashChange = () => {
+    // Check URL routing for payment return or hash navigation
+    const handleLocationChange = () => {
+      const path = window.location.pathname;
       const hash = window.location.hash;
+      const search = window.location.search;
+
+      if (
+        path.startsWith('/payment-return') || 
+        path.startsWith('/payment-cancel') ||
+        hash.startsWith('#payment-return') ||
+        hash.startsWith('#payment-cancel') ||
+        (search.includes('token=') && (search.includes('PayerID=') || search.includes('orderId=')))
+      ) {
+        setCurrentView('payment_return');
+        return;
+      }
+
       if (hash.startsWith('#plan=')) {
         const slug = hash.replace('#plan=', '').split('&')[0];
         if (slug) {
@@ -59,9 +90,13 @@ function MainApp() {
       }
     };
 
-    handleHashChange();
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    handleLocationChange();
+    window.addEventListener('hashchange', handleLocationChange);
+    window.addEventListener('popstate', handleLocationChange);
+    return () => {
+      window.removeEventListener('hashchange', handleLocationChange);
+      window.removeEventListener('popstate', handleLocationChange);
+    };
   }, []);
 
   // Track landing page view
@@ -121,7 +156,7 @@ function MainApp() {
       {/* Top Navigation */}
       <Navbar
         onOpenAuth={handleOpenAuth}
-        currentView={currentView === 'public_plan' ? 'landing' : currentView}
+        currentView={currentView === 'public_plan' || currentView === 'payment_return' ? 'landing' : currentView}
         setCurrentView={(view) => {
           if (view === 'dashboard' && !user) {
             handleOpenAuth('login');
@@ -142,7 +177,36 @@ function MainApp() {
 
       {/* Main View Router */}
       <div className="flex-1">
-        {currentView === 'public_plan' && publicPlanSlug ? (
+        {currentView === 'payment_return' ? (
+          <PayPalReturnView
+            onSuccess={(_entitlement, planId) => {
+              try {
+                window.history.replaceState({}, document.title, window.location.pathname.startsWith('/payment-') ? '/' : window.location.pathname);
+              } catch {
+                // Non-blocking
+              }
+              setCurrentView('dashboard');
+              setDashboardTab('plans');
+            }}
+            onCancel={(_planId) => {
+              try {
+                window.history.replaceState({}, document.title, window.location.pathname.startsWith('/payment-') ? '/' : window.location.pathname);
+              } catch {
+                // Non-blocking
+              }
+              setCurrentView(user ? 'dashboard' : 'landing');
+            }}
+            onRetry={(_planId, _pkg) => {
+              try {
+                window.history.replaceState({}, document.title, window.location.pathname.startsWith('/payment-') ? '/' : window.location.pathname);
+              } catch {
+                // Non-blocking
+              }
+              setCurrentView('dashboard');
+              setDashboardTab('plans');
+            }}
+          />
+        ) : currentView === 'public_plan' && publicPlanSlug ? (
           <PublicPlanView
             slug={publicPlanSlug}
             onBack={handleClosePublicPlan}
