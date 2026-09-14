@@ -144,7 +144,7 @@ export const MyPlansList: React.FC<MyPlansListProps> = ({
           </div>
           <h3 className="text-lg font-bold text-slate-900">No business plans created yet</h3>
           <p className="mt-1 text-xs sm:text-sm text-slate-500 max-w-md mx-auto">
-            Turn your venture idea into an investor-ready document. Our AI will structure market forecasts, operations, and capital allocation in minutes.
+            Turn your venture idea into an investor-ready document with structured market forecasts, operations, and capital allocation in minutes.
           </p>
           <button
             id="btn-empty-create-plan"

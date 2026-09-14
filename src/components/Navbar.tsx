@@ -26,7 +26,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   dashboardTab,
   setDashboardTab,
 }) => {
-  const { user, profile, logout } = useAuth();
+  const { user, profile, logout, isOffline, connectionStatus } = useAuth();
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-slate-200 bg-white/95 backdrop-blur-md transition-all">
@@ -45,14 +45,27 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span className="text-lg font-bold tracking-tight text-slate-900 block leading-tight">
               Global Business <span className="text-indigo-600 font-extrabold">Generator</span>
             </span>
-            <span className="text-[11px] font-medium tracking-wide text-slate-500 uppercase block">
-              AI Venture Strategy Platform
+            <span className="text-[11px] font-medium tracking-wide text-slate-500 block">
+              Turn Your Idea Into a Business.
             </span>
           </div>
         </div>
 
         {/* Center Navigation */}
         <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600">
+          {connectionStatus === 'connecting' && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200 animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              Connecting...
+            </span>
+          )}
+          {isOffline && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+              Offline Mode
+            </span>
+          )}
+
           <button
             id="nav-explore-ideas"
             onClick={() => {

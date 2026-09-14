@@ -34,6 +34,7 @@ export interface UserProfile {
   referralConversionsCount?: number;
   lastLoginAt?: string;
   updatedAt?: string;
+  _isOfflineFallback?: boolean;
 }
 
 export interface BusinessPlanInput {

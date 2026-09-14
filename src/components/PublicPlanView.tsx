@@ -377,7 +377,7 @@ export const PublicPlanView: React.FC<PublicPlanViewProps> = ({
             </div>
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Print, Export, and AI Marketing Kit</span>
+              <span>Print, Export, and Launch Kit</span>
             </div>
           </div>
         </section>

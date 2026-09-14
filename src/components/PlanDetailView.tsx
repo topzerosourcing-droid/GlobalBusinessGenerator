@@ -265,7 +265,7 @@ Year 1 Revenue Projection: ${generatedPlan.monthlyRevenueForecast?.totalYear1Pro
             className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-50 border border-indigo-200 px-3.5 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition shadow-2xs"
           >
             <Megaphone className="h-3.5 w-3.5 text-indigo-600" />
-            <span>AI Marketing Kit</span>
+            <span>Launch & Marketing Kit</span>
           </button>
 
           <button

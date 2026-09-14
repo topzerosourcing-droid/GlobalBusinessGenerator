@@ -1,25 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  ShieldCheck, 
   Lock, 
   CheckCircle2, 
-  Sparkles, 
-  CreditCard, 
   ArrowRight, 
   X, 
   AlertCircle, 
-  Clock, 
-  ExternalLink, 
-  RotateCcw, 
   Receipt, 
-  Check, 
-  Loader2 
+  Download, 
+  ExternalLink,
+  ShieldCheck,
+  RotateCcw,
+  Loader2,
+  FileText
 } from 'lucide-react';
 import { PlanPackageId, ProductPackage, PlanEntitlement, BusinessPlan } from '../types';
 import { PRODUCT_PACKAGES, createProEntitlement, createInvestorEntitlement } from '../services/entitlementService';
 import { paymentGateway, GatewayConfigResponse } from '../services/paymentService';
 import { doc, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import { InvoiceData, downloadInvoicePdf } from '../utils/invoiceGenerator';
+import { InvoiceModal } from './InvoiceModal';
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -31,9 +31,9 @@ interface CheckoutModalProps {
   onSuccess: (entitlement: PlanEntitlement) => void;
 }
 
-type CheckoutStep = 'select' | 'authorizing' | 'paypal_checkout' | 'processing' | 'success' | 'error';
+type CheckoutStep = 'checkout' | 'capturing' | 'success';
 
-// Helper to load PayPal JavaScript SDK
+// Helper to dynamically load the official PayPal JavaScript SDK
 const loadPayPalSdk = (clientId: string): Promise<any> => {
   return new Promise((resolve, reject) => {
     if ((window as any).paypal?.Buttons) {
@@ -78,19 +78,22 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const [activePackageId, setActivePackageId] = useState<PlanPackageId>(
     selectedPackageId === 'free' ? 'pro' : selectedPackageId
   );
-  const [step, setStep] = useState<CheckoutStep>('select');
+  const [step, setStep] = useState<CheckoutStep>('checkout');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [gatewayConfig, setGatewayConfig] = useState<GatewayConfigResponse | null>(null);
   const [isSdkLoading, setIsSdkLoading] = useState<boolean>(false);
-  const [sdkLoadError, setSdkLoadError] = useState<boolean>(false);
+  const [isCapturing, setIsCapturing] = useState<boolean>(false);
 
-  // Active transaction details from server
+  // Active transaction details
   const [currentOrderId, setCurrentOrderId] = useState<string | null>(null);
   const [currentPayPalOrderId, setCurrentPayPalOrderId] = useState<string | null>(null);
-  const [currentApprovalUrl, setCurrentApprovalUrl] = useState<string | null>(null);
-  const [grantedEntitlement, setGrantedEntitlement] = useState<PlanEntitlement | null>(null);
   const [verifiedTransactionId, setVerifiedTransactionId] = useState<string | null>(null);
-  const [isCheckingApproval, setIsCheckingApproval] = useState<boolean>(false);
+  const [paymentTimestamp, setPaymentTimestamp] = useState<string>('');
+  const [grantedEntitlement, setGrantedEntitlement] = useState<PlanEntitlement | null>(null);
+
+  // Invoice Data & Viewing Modal
+  const [invoiceData, setInvoiceData] = useState<InvoiceData | null>(null);
+  const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState<boolean>(false);
 
   const paypalButtonContainerRef = useRef<HTMLDivElement | null>(null);
   const activePackageIdRef = useRef<PlanPackageId>(activePackageId);
@@ -98,7 +101,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const currentOrderIdRef = useRef<string | null>(null);
   currentOrderIdRef.current = currentOrderId;
 
-  // Load gateway config on open
+  // Initialize gateway config on modal open
   useEffect(() => {
     if (isOpen) {
       paymentGateway.getConfig().then(cfg => {
@@ -114,53 +117,54 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const merchantEmail = gatewayConfig?.merchantEmail || 'topogabolekwe@gmail.com';
 
   /**
-   * Capture and strictly verify payment directly with PayPal via Server API
-   * Server requires buyer approval to be verified by PayPal before executing capture.
+   * Execute server capture, perform server verification, update entitlement & create invoice
    */
-  const handleCaptureAndVerify = async (providedOrderId?: string, providedProviderOrderId?: string) => {
-    const orderIdToUse = providedOrderId || currentOrderId;
-    const paypalOrderIdToUse = providedProviderOrderId || currentPayPalOrderId;
-
-    if (!orderIdToUse) {
-      setErrorMessage('No active order to capture.');
-      setStep('error');
-      return;
-    }
-
-    setStep('processing');
+  const handleCaptureAndServerVerify = async (orderIdToUse: string, paypalOrderIdToUse?: string) => {
+    setStep('capturing');
+    setIsCapturing(true);
     setErrorMessage(null);
 
     try {
-      // Server queries PayPal Live to confirm status === APPROVED before capturing
+      // 1. Server-side capture (validates status is APPROVED on PayPal Live before capturing)
       const captureRes = await paymentGateway.captureOrder(
         orderIdToUse,
-        paypalOrderIdToUse || undefined
+        paypalOrderIdToUse
       );
 
       if (!captureRes.success) {
-        // If buyer hasn't approved yet on PayPal, return to checkout screen with notice
-        if ((captureRes as any).requiresBuyerApproval || captureRes.error?.includes('approved') || captureRes.error?.includes('approval')) {
-          setStep('paypal_checkout');
-          setErrorMessage(captureRes.error || 'Payment has not been approved in PayPal yet. Please complete authorization in the PayPal window.');
-          return;
-        }
-        throw new Error(captureRes.error || 'Payment was not verified by PayPal.');
+        throw new Error(captureRes.error || 'PayPal payment could not be captured.');
       }
 
       const txId = captureRes.transactionId || `TXN-PP-${Date.now()}`;
-      setVerifiedTransactionId(txId);
+      const nowFormatted = new Date().toLocaleString('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'short'
+      });
 
-      // Construct verified entitlement with cryptographic signature
+      // 2. Server-side verification call
+      const verifyRes = await paymentGateway.verifyPayment(
+        orderIdToUse,
+        plan.id,
+        captureRes.verificationToken
+      );
+
+      if (!verifyRes.verified) {
+        throw new Error(verifyRes.error || 'Server-side payment verification failed.');
+      }
+
+      setVerifiedTransactionId(txId);
+      setPaymentTimestamp(nowFormatted);
+
+      // 3. Construct verified entitlement
       const entitlement: PlanEntitlement = isInvestor
         ? createInvestorEntitlement(plan.id, userId, orderIdToUse, captureRes.verificationToken)
         : createProEntitlement(plan.id, userId, orderIdToUse, captureRes.verificationToken);
 
-      // Store in Firestore
+      // 4. Save to Firestore (entitlements collection & business_plans status update)
       try {
         const entDocRef = doc(db, 'entitlements', entitlement.id);
         await setDoc(entDocRef, entitlement, { merge: true });
 
-        // Update plan status to paid
         const planDocRef = doc(db, 'business_plans', plan.id);
         await updateDoc(planDocRef, {
           status: 'paid',
@@ -169,109 +173,55 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
           updatedAt: new Date().toISOString()
         });
       } catch (fsErr) {
-        console.debug('[Checkout] Firestore entitlement log deferred:', fsErr);
+        console.debug('[Checkout] Firestore sync deferred:', fsErr);
       }
 
-      // Local storage cache for offline resilience
-      localStorage.setItem(`gbg_entitlement_${plan.id}`, JSON.stringify(entitlement));
+      // 5. Cache entitlement locally for offline resilience
+      try {
+        localStorage.setItem(`gbg_entitlement_${plan.id}`, JSON.stringify(entitlement));
+      } catch {
+        // Non-fatal
+      }
 
       setGrantedEntitlement(entitlement);
+
+      // 6. Build official Invoice / Receipt Record
+      const invoice: InvoiceData = {
+        invoiceNumber: `INV-${orderIdToUse.replace('ORD-', '')}`,
+        orderId: orderIdToUse,
+        paymentDate: nowFormatted,
+        customerName: plan.input.founderName || userEmail?.split('@')[0] || 'Business Founder',
+        customerEmail: userEmail || 'customer@globalbusinessgenerator.com',
+        businessPlanName: plan.input.businessName,
+        packagePurchased: pkg.name,
+        packageId: activePackageId as 'pro' | 'investor',
+        amountPaid: pkg.priceUSD,
+        currency: 'USD',
+        paypalTransactionId: txId,
+        paypalOrderId: paypalOrderIdToUse || currentPayPalOrderId || undefined,
+        paymentStatus: 'PAID',
+        purchaseType: 'One-time purchase',
+        accessType: 'Lifetime access',
+        supportEmail: merchantEmail,
+        merchantName: 'Global Business Generator'
+      };
+
+      setInvoiceData(invoice);
       setStep('success');
     } catch (err: any) {
-      console.error('[Checkout] Verification failed:', err);
-      setErrorMessage(err.message || 'Payment capture failed or was declined by PayPal.');
-      setStep('error');
-    }
-  };
-
-  /**
-   * Launch Dedicated PayPal Approval Flow (Used directly or as fallback)
-   */
-  const handleInitiateApprovalWindow = async () => {
-    setErrorMessage(null);
-    setStep('authorizing');
-
-    try {
-      const orderRes = await paymentGateway.createOrder({
-        userId: userId || 'guest_user',
-        planId: plan.id,
-        productPackage: activePackageId,
-        amount: pkg.priceUSD, // Server strictly enforces from catalog
-        currency: 'USD',
-        customerEmail: userEmail || merchantEmail,
-        paymentProvider: 'paypal'
-      });
-
-      if (!orderRes.success || !orderRes.orderId) {
-        throw new Error(orderRes.message || 'Could not initialize PayPal Live order.');
-      }
-
-      setCurrentOrderId(orderRes.orderId);
-      setCurrentPayPalOrderId(orderRes.providerOrderId || null);
-      setCurrentApprovalUrl(orderRes.approvalUrl || null);
-
-      // Record pending order in Firestore orders collection
-      try {
-        const orderDocRef = doc(db, 'orders', orderRes.orderId);
-        await setDoc(orderDocRef, {
-          orderId: orderRes.orderId,
-          userId: userId || 'guest_user',
-          planId: plan.id,
-          productPackage: activePackageId,
-          amount: pkg.priceUSD,
-          currency: 'USD',
-          status: 'payment_pending',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          paymentProvider: 'paypal',
-          providerOrderId: orderRes.providerOrderId || ''
-        }, { merge: true });
-      } catch (fsErr) {
-        console.debug('[Checkout] Firestore order log deferred:', fsErr);
-      }
-
-      // Move to active PayPal approval state
-      setStep('paypal_checkout');
-
-      // Automatically open PayPal approval window in new tab if URL available
-      if (orderRes.approvalUrl) {
-        window.open(orderRes.approvalUrl, '_blank', 'noopener,noreferrer');
-      }
-    } catch (err: any) {
-      console.error('[Checkout] Error initializing order:', err);
-      setErrorMessage(err.message || 'Could not initialize PayPal checkout. Please try again.');
-      setStep('error');
-    }
-  };
-
-  /**
-   * Check PayPal order status manually
-   */
-  const handleCheckApprovalStatus = async () => {
-    if (!currentOrderId) return;
-    setIsCheckingApproval(true);
-    setErrorMessage(null);
-
-    try {
-      const statusRes = await paymentGateway.checkOrderStatus(currentOrderId);
-      if (statusRes.buyerApproved || statusRes.isCompleted) {
-        // Buyer has approved! Server can now safely capture
-        await handleCaptureAndVerify(currentOrderId, currentPayPalOrderId || undefined);
-      } else {
-        setErrorMessage(`PayPal indicates this order is awaiting customer approval (${statusRes.paypalStatus || 'Pending'}). Please complete the authorization in PayPal.`);
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Could not verify approval status with PayPal.');
+      console.error('[Checkout] Capture/verification error:', err);
+      setErrorMessage(err.message || 'Payment processing failed. Please try again.');
+      setStep('checkout');
     } finally {
-      setIsCheckingApproval(false);
+      setIsCapturing(false);
     }
   };
 
   /**
-   * Render official PayPal JavaScript SDK Buttons
+   * Render Official PayPal Buttons (directly into the checkout card)
    */
   useEffect(() => {
-    if (!isOpen || step !== 'select') return;
+    if (!isOpen || step !== 'checkout') return;
 
     let isMounted = true;
     const clientId = gatewayConfig?.clientId;
@@ -281,14 +231,13 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     }
 
     setIsSdkLoading(true);
-    setSdkLoadError(false);
 
     loadPayPalSdk(clientId)
       .then((paypal) => {
         if (!isMounted || !paypalButtonContainerRef.current) return;
         setIsSdkLoading(false);
 
-        // Clear previous buttons before re-rendering
+        // Clear existing button DOM
         paypalButtonContainerRef.current.innerHTML = '';
 
         try {
@@ -297,33 +246,33 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               layout: 'vertical',
               color: 'gold',
               shape: 'rect',
-              label: 'paypal',
-              height: 44
+              label: 'checkout',
+              height: 46
             },
             createOrder: async () => {
               setErrorMessage(null);
               const currentPkg = PRODUCT_PACKAGES[activePackageIdRef.current] || PRODUCT_PACKAGES.pro;
-              
+
+              // Immediately create PayPal Live order on server
               const orderRes = await paymentGateway.createOrder({
                 userId: userId || 'guest_user',
                 planId: plan.id,
-                productPackage: activePackageIdRef.current,
-                amount: currentPkg.priceUSD, // Server validates price from server-authoritative catalog
+                productPackage: activePackageIdRef.current as 'pro' | 'investor',
+                amount: currentPkg.priceUSD, // Server-enforced catalog price ($29 or $69 USD)
                 currency: 'USD',
                 customerEmail: userEmail || merchantEmail,
                 paymentProvider: 'paypal'
               });
 
               if (!orderRes.success || !orderRes.providerOrderId) {
-                throw new Error(orderRes.message || 'Could not initialize PayPal LIVE order.');
+                throw new Error(orderRes.message || 'Could not initialize PayPal Live order.');
               }
 
               currentOrderIdRef.current = orderRes.orderId;
               setCurrentOrderId(orderRes.orderId);
               setCurrentPayPalOrderId(orderRes.providerOrderId);
-              setCurrentApprovalUrl(orderRes.approvalUrl || null);
 
-              // Record in Firestore
+              // Record pending order in Firestore
               try {
                 const orderDocRef = doc(db, 'orders', orderRes.orderId);
                 await setDoc(orderDocRef, {
@@ -343,34 +292,34 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 console.debug('[Checkout] Firestore order log deferred:', fsErr);
               }
 
+              // Return PayPal's order ID directly to PayPal SDK to open approval window
               return orderRes.providerOrderId;
             },
             onApprove: async (data: any) => {
-              // Buyer has officially authorized payment on PayPal!
+              // Buyer officially confirmed authorization in PayPal window
               console.log('[PayPal SDK] Buyer approval confirmed on PayPal Live:', data);
-              const intOrderId = currentOrderIdRef.current || currentOrderId;
-              if (intOrderId) {
-                await handleCaptureAndVerify(intOrderId, data.orderID);
+              const internalOrderId = currentOrderIdRef.current || currentOrderId;
+              if (internalOrderId) {
+                await handleCaptureAndServerVerify(internalOrderId, data.orderID);
               }
             },
             onCancel: () => {
-              console.log('[PayPal SDK] Buyer cancelled checkout.');
+              console.log('[PayPal SDK] Buyer closed or cancelled checkout window.');
               setErrorMessage('PayPal checkout was cancelled. No charges were made.');
             },
             onError: (err: any) => {
               console.error('[PayPal SDK Error]:', err);
-              setErrorMessage('PayPal encountered an issue. You can also use the dedicated PayPal approval window.');
+              setErrorMessage('PayPal encountered a connection issue. You may retry or use direct checkout.');
             }
           }).render(paypalButtonContainerRef.current);
         } catch (renderErr) {
-          console.warn('[PayPal SDK] Button render notice:', renderErr);
+          console.warn('[PayPal SDK] Render warning:', renderErr);
         }
       })
       .catch((err) => {
         if (!isMounted) return;
         setIsSdkLoading(false);
-        setSdkLoadError(true);
-        console.warn('[PayPal SDK] Notice:', err.message);
+        console.warn('[PayPal SDK] Initialization notice:', err.message);
       });
 
     return () => {
@@ -379,64 +328,58 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   }, [isOpen, gatewayConfig?.clientId, activePackageId, step]);
 
   /**
-   * Auto-poll order status while in paypal_checkout step to detect buyer approval in real-time
+   * Direct PayPal Approval Window (Fallback for popup blockers or direct link preference)
    */
-  useEffect(() => {
-    if (step !== 'paypal_checkout' || !currentOrderId) return;
+  const handleLaunchDirectApproval = async () => {
+    setErrorMessage(null);
+    setIsCapturing(true);
 
-    let isSubscribed = true;
-    const interval = setInterval(async () => {
-      try {
-        const statusRes = await paymentGateway.checkOrderStatus(currentOrderId);
-        if (!isSubscribed) return;
+    try {
+      const orderRes = await paymentGateway.createOrder({
+        userId: userId || 'guest_user',
+        planId: plan.id,
+        productPackage: activePackageId as 'pro' | 'investor',
+        amount: pkg.priceUSD,
+        currency: 'USD',
+        customerEmail: userEmail || merchantEmail,
+        paymentProvider: 'paypal'
+      });
 
-        if (statusRes.buyerApproved) {
-          console.log('[Checkout Poller] Buyer approval detected on PayPal Live! Triggering server capture...');
-          clearInterval(interval);
-          handleCaptureAndVerify(currentOrderId, currentPayPalOrderId || undefined);
-        } else if (statusRes.isCompleted) {
-          console.log('[Checkout Poller] Order already completed on PayPal! Updating entitlement...');
-          clearInterval(interval);
-          handleCaptureAndVerify(currentOrderId, currentPayPalOrderId || undefined);
-        }
-      } catch {
-        // Non-blocking background check
+      if (!orderRes.success || !orderRes.orderId) {
+        throw new Error(orderRes.message || 'Could not initialize PayPal order.');
       }
-    }, 3000);
 
-    return () => {
-      isSubscribed = false;
-      clearInterval(interval);
-    };
-  }, [step, currentOrderId, currentPayPalOrderId]);
+      setCurrentOrderId(orderRes.orderId);
+      setCurrentPayPalOrderId(orderRes.providerOrderId || null);
+
+      if (orderRes.approvalUrl) {
+        window.open(orderRes.approvalUrl, '_blank', 'noopener,noreferrer');
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Could not open PayPal approval window.');
+    } finally {
+      setIsCapturing(false);
+    }
+  };
 
   /**
-   * Cancel Checkout
+   * Safe Navigation Cancel: Returns user to business plan without penalty
    */
-  const handleCancelCheckout = async () => {
+  const handleCancelAndReturn = async () => {
     if (currentOrderId) {
       try {
         await paymentGateway.cancelOrder(currentOrderId);
       } catch {
-        // Continue
+        // Non-blocking
       }
     }
-    setErrorMessage('Checkout was cancelled. You may select a package and try again when ready.');
-    setStep('error');
+    onClose();
   };
 
   /**
-   * Retry Payment
+   * Success: Continue to My Business Plan
    */
-  const handleRetry = () => {
-    setErrorMessage(null);
-    setCurrentOrderId(null);
-    setCurrentPayPalOrderId(null);
-    setCurrentApprovalUrl(null);
-    setStep('select');
-  };
-
-  const handleFinish = () => {
+  const handleContinueToPlan = () => {
     if (grantedEntitlement) {
       onSuccess(grantedEntitlement);
     }
@@ -446,130 +389,108 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div id="checkout-modal-backdrop" className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <>
       <div 
-        id="checkout-modal-container"
-        className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden text-slate-900 animate-in fade-in zoom-in-95 duration-200"
+        id="checkout-modal-backdrop" 
+        className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4"
       >
-        {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/80">
-          <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">
-              <Lock className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <h2 className="text-lg font-bold text-slate-900 tracking-tight">
-                  {step === 'success' ? 'Payment Verified & Confirmed' : 'Unlock Your Complete Business Plan'}
-                </h2>
-                <span className="px-2 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wide bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1"></span>
-                  PayPal Live
-                </span>
+        <div 
+          id="checkout-modal-container"
+          className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden text-slate-900 animate-in fade-in zoom-in-95 duration-150"
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/90">
+            <div className="flex items-center space-x-2">
+              <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-xs">
+                <Lock className="w-4 h-4" />
               </div>
-              <p className="text-xs text-slate-500 font-medium">
-                {plan.input.businessName} • Global Business Generator
-              </p>
-            </div>
-          </div>
-          {step !== 'processing' && step !== 'authorizing' && (
-            <button
-              id="checkout-close-btn"
-              onClick={onClose}
-              className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          )}
-        </div>
-
-        {/* STEP 1: Select Package & Buyer Checkout */}
-        {step === 'select' && (
-          <div className="p-6">
-            <div className="space-y-6">
-              {/* Package Selector Pills */}
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
-                  Select Business Package
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {/* Pro Plan */}
-                  <div
-                    id="package-card-pro"
-                    onClick={() => setActivePackageId('pro')}
-                    className={`relative p-4 rounded-xl border-2 cursor-pointer transition-all ${
-                      activePackageId === 'pro'
-                        ? 'border-emerald-600 bg-emerald-50/40 shadow-sm'
-                        : 'border-slate-200 hover:border-slate-300'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start mb-1">
-                      <div>
-                        <span className="font-bold text-slate-900 text-sm">Pro Business Plan</span>
-                        <span className="block text-xs text-emerald-700 font-semibold">Bank & Operations Ready</span>
-                      </div>
-                      <span className="text-base font-black text-slate-900">$29 <span className="text-xs font-normal text-slate-500">USD</span></span>
-                    </div>
-                    <p className="text-xs text-slate-600 mt-2 line-clamp-2">
-                      Full 34-section plan, 3-year cash-flow and revenue forecast, break-even analysis, and PDF export.
-                    </p>
-                    <div className="mt-3 flex items-center text-[11px] font-semibold text-emerald-700">
-                      <Check className="w-3.5 h-3.5 mr-1 text-emerald-600" />
-                      One-time payment • Lifetime access
-                    </div>
-                  </div>
+                <h2 className="text-base font-bold text-slate-900 tracking-tight">
+                  {step === 'success' ? 'Order Confirmed' : 'Checkout & Unlock'}
+                </h2>
+                <p className="text-xs text-slate-500 font-medium truncate max-w-[280px]">
+                  {plan.input.businessName}
+                </p>
+              </div>
+            </div>
+            
+            {step !== 'capturing' && (
+              <button
+                id="checkout-close-btn"
+                type="button"
+                onClick={step === 'success' ? handleContinueToPlan : handleCancelAndReturn}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-200/50 transition cursor-pointer"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </div>
 
-                  {/* Investor Package */}
-                  <div
-                    id="package-card-investor"
-                    onClick={() => setActivePackageId('investor')}
-                    className={`relative p-4 rounded-xl border-2 cursor-pointer transition-all ${
-                      activePackageId === 'investor'
-                        ? 'border-indigo-600 bg-indigo-50/40 shadow-sm'
-                        : 'border-slate-200 hover:border-slate-300'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start mb-1">
-                      <div>
-                        <span className="font-bold text-slate-900 text-sm">Investor Package</span>
-                        <span className="block text-xs text-indigo-700 font-semibold">Venture & Loan Suite</span>
-                      </div>
-                      <span className="text-base font-black text-slate-900">$69 <span className="text-xs font-normal text-slate-500">USD</span></span>
-                    </div>
-                    <p className="text-xs text-slate-600 mt-2 line-clamp-2">
-                      Everything in Pro plus funding tranches, investor pitch deck outline, readiness audit, and financial models.
-                    </p>
-                    <div className="mt-3 flex items-center text-[11px] font-semibold text-indigo-700">
-                      <Check className="w-3.5 h-3.5 mr-1 text-indigo-600" />
-                      One-time payment • Pitch & Grant ready
-                    </div>
+          {/* SCREEN 1: STREAMLINED ONE-TIME CHECKOUT */}
+          {step === 'checkout' && (
+            <div className="p-6 space-y-5">
+              
+              {/* Package Selector (Clean, low-friction toggle) */}
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  id="checkout-select-pro"
+                  onClick={() => setActivePackageId('pro')}
+                  className={`p-3.5 rounded-xl border-2 text-left transition-all cursor-pointer ${
+                    activePackageId === 'pro'
+                      ? 'border-emerald-600 bg-emerald-50/50 shadow-xs'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                >
+                  <div className="flex justify-between items-start">
+                    <span className="text-xs font-extrabold text-slate-900">Pro Plan</span>
+                    <span className="text-sm font-black text-slate-900">$29</span>
                   </div>
-                </div>
+                  <span className="block text-[11px] text-emerald-700 font-medium mt-0.5">
+                    34-Section Blueprint
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  id="checkout-select-investor"
+                  onClick={() => setActivePackageId('investor')}
+                  className={`p-3.5 rounded-xl border-2 text-left transition-all cursor-pointer ${
+                    activePackageId === 'investor'
+                      ? 'border-indigo-600 bg-indigo-50/50 shadow-xs'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                >
+                  <div className="flex justify-between items-start">
+                    <span className="text-xs font-extrabold text-slate-900">Investor Suite</span>
+                    <span className="text-sm font-black text-slate-900">$69</span>
+                  </div>
+                  <span className="block text-[11px] text-indigo-700 font-medium mt-0.5">
+                    Fundraising & Exhibits
+                  </span>
+                </button>
               </div>
 
-              {/* Order Summary Breakdown */}
-              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80 space-y-2.5">
-                <div className="flex justify-between text-xs text-slate-600">
-                  <span>Selected Package:</span>
+              {/* Order Summary Box */}
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80 space-y-2 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-600">Selected Package:</span>
                   <span className="font-bold text-slate-900">{pkg.name}</span>
                 </div>
-                <div className="flex justify-between text-xs text-slate-600">
-                  <span>Target Business Plan:</span>
-                  <span className="font-semibold text-slate-900">{plan.input.businessName}</span>
-                </div>
-                <div className="flex justify-between text-xs text-slate-600">
-                  <span>PayPal Live Payee:</span>
-                  <span className="font-mono text-slate-800 text-[11px]">{merchantEmail}</span>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-600">License Terms:</span>
+                  <span className="font-semibold text-emerald-700">One-time payment • Lifetime access</span>
                 </div>
                 <div className="pt-2 border-t border-slate-200 flex justify-between items-baseline">
-                  <span className="text-xs font-bold text-slate-900 uppercase">Total Amount Due:</span>
-                  <span className="text-xl font-black text-slate-900">
-                    ${pkg.priceUSD}.00 <span className="text-xs font-semibold text-slate-500">USD</span>
+                  <span className="text-xs font-bold text-slate-900 uppercase">Total Due:</span>
+                  <span className="text-2xl font-black text-slate-900">
+                    ${pkg.priceUSD}.00 <span className="text-xs font-medium text-slate-500">USD</span>
                   </span>
                 </div>
               </div>
 
-              {/* Error Alert if any */}
+              {/* Alert / Notice if any */}
               {errorMessage && (
                 <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start space-x-2">
                   <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -577,33 +498,17 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 </div>
               )}
 
-              {/* Guarantees */}
-              <div className="py-2.5 px-4 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between text-xs text-slate-600">
-                <div className="flex items-center space-x-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span>256-Bit SSL Encrypted</span>
-                </div>
-                <div className="flex items-center space-x-1.5">
-                  <Clock className="w-4 h-4 text-blue-600" />
-                  <span>Instant Verification</span>
-                </div>
-                <div>
-                  <span className="font-semibold text-slate-700">30-Day Money-Back Guarantee</span>
-                </div>
-              </div>
-
-              {/* REAL PAYPAL BUYER APPROVAL EXPERIENCE */}
-              <div className="space-y-3 pt-1">
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
-                  Complete Payment with PayPal Live
+              {/* Official PayPal Buttons Container */}
+              <div className="space-y-2 pt-1">
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                  Instant Checkout with PayPal Live:
                 </label>
 
-                {/* Primary: In-Modal Official PayPal JavaScript SDK Buttons */}
                 <div className="min-h-[90px] relative">
                   {isSdkLoading && (
                     <div className="flex items-center justify-center p-6 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-500 space-x-2">
                       <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-                      <span>Loading secure PayPal buttons...</span>
+                      <span>Loading secure PayPal checkout...</span>
                     </div>
                   )}
 
@@ -614,240 +519,153 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                   />
                 </div>
 
-                {/* Secondary / Fallback: Dedicated Approval Window Launcher */}
-                <div className="pt-2 border-t border-slate-100 text-center">
+                {/* Direct Popup Launcher (Optional link for convenience) */}
+                <div className="text-center pt-1">
                   <button
                     type="button"
-                    id="checkout-open-approval-window-btn"
-                    onClick={handleInitiateApprovalWindow}
-                    className="w-full py-3 px-4 rounded-xl border border-slate-200 hover:border-blue-500 bg-slate-50 hover:bg-blue-50/50 text-slate-700 hover:text-blue-700 font-semibold text-xs flex items-center justify-center space-x-2 transition cursor-pointer"
+                    onClick={handleLaunchDirectApproval}
+                    className="text-xs text-slate-500 hover:text-blue-700 inline-flex items-center space-x-1 underline cursor-pointer"
                   >
-                    <span>Or open PayPal in a dedicated approval window</span>
-                    <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Having trouble? Open PayPal in a new tab</span>
+                    <ExternalLink className="w-3 h-3" />
                   </button>
-                  <p className="text-[11px] text-slate-500 mt-2">
-                    Official PayPal LIVE Checkout. Prices: Pro $29.00 USD, Investor $69.00 USD. No recurring fees.
-                  </p>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
 
-        {/* STEP 2: Authorizing / Initializing Order */}
-        {step === 'authorizing' && (
-          <div className="p-12 text-center">
-            <div className="w-14 h-14 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin mx-auto mb-4" />
-            <h3 className="text-xl font-bold text-slate-900 mb-2">Connecting to PayPal Live...</h3>
-            <p className="text-sm text-slate-600 max-w-sm mx-auto">
-              Creating LIVE PayPal order for <strong className="text-slate-800">${pkg.priceUSD}.00 USD</strong>. Payee verified as <strong className="text-slate-800">{merchantEmail}</strong>.
-            </p>
-          </div>
-        )}
+              {/* Security Badges & Return Link */}
+              <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                <div className="flex items-center space-x-1 text-slate-600">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <span>256-Bit SSL • Verified PayPal Live</span>
+                </div>
 
-        {/* STEP 3: Active PayPal Approval Window & Poller */}
-        {step === 'paypal_checkout' && (
-          <div className="p-6">
-            <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl mb-6">
-              <div className="flex items-center space-x-2 text-blue-900 font-bold text-sm mb-1">
-                <span className="font-black italic text-lg text-blue-700">PayPal</span>
-                <span>Awaiting Your Payment Approval</span>
+                <button
+                  type="button"
+                  id="checkout-cancel-btn"
+                  onClick={handleCancelAndReturn}
+                  className="text-xs font-semibold text-slate-600 hover:text-slate-900 transition underline cursor-pointer"
+                >
+                  Cancel & Return to Business Plan
+                </button>
               </div>
-              <p className="text-xs text-blue-700 leading-relaxed">
-                Please complete and authorize your payment in the PayPal checkout window. Once you confirm on PayPal, this window will automatically detect your approval and unlock your business plan.
+            </div>
+          )}
+
+          {/* SCREEN 2: CAPTURING & VERIFYING */}
+          {step === 'capturing' && (
+            <div className="p-12 text-center space-y-4">
+              <div className="w-14 h-14 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin mx-auto" />
+              <h3 className="text-lg font-bold text-slate-900">
+                Verifying Payment with PayPal...
+              </h3>
+              <p className="text-xs text-slate-600 max-w-xs mx-auto">
+                Confirming buyer authorization with PayPal Live and unlocking your business plan.
               </p>
             </div>
+          )}
 
-            {/* Error or Alert notice */}
-            {errorMessage && (
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start space-x-2 mb-4">
-                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <span>{errorMessage}</span>
+          {/* SCREEN 3: PROFESSIONAL PAYMENT SUCCESS PAGE */}
+          {step === 'success' && (
+            <div className="p-6 space-y-5 animate-in fade-in duration-200">
+              {/* Success Badge */}
+              <div className="text-center">
+                <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto mb-2 shadow-xs">
+                  <CheckCircle2 className="w-7 h-7" />
+                </div>
+                <h3 className="text-xl font-black text-slate-900 tracking-tight">
+                  Payment Successful!
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Your business plan is now fully unlocked and ready.
+                </p>
               </div>
-            )}
 
-            {/* Order Ledger Preview */}
-            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2 mb-6 text-xs">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Internal Order ID:</span>
-                <span className="font-mono font-bold text-slate-800">{currentOrderId}</span>
+              {/* Official Transaction Summary Card */}
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Package Purchased:</span>
+                  <span className="font-bold text-slate-900">{pkg.name}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Amount Paid:</span>
+                  <span className="font-bold text-emerald-700 text-sm">
+                    ${pkg.priceUSD}.00 USD
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">PayPal Reference:</span>
+                  <span className="font-mono font-semibold text-slate-800">
+                    {verifiedTransactionId || 'TXN-PP-CONFIRMED'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Date & Time:</span>
+                  <span className="text-slate-700">{paymentTimestamp}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Business Plan:</span>
+                  <span className="font-semibold text-slate-900 truncate max-w-[200px]">
+                    {plan.input.businessName}
+                  </span>
+                </div>
               </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">PayPal Order ID:</span>
-                <span className="font-mono font-bold text-blue-700">{currentPayPalOrderId || 'Assigned by PayPal'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Package:</span>
-                <span className="font-bold text-slate-900">{pkg.name}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">PayPal Merchant:</span>
-                <span className="font-semibold text-slate-700">{merchantEmail}</span>
-              </div>
-              <div className="pt-2 border-t border-slate-200 flex justify-between items-baseline">
-                <span className="font-bold text-slate-900">Total Price:</span>
-                <span className="text-lg font-black text-slate-900">${pkg.priceUSD}.00 USD</span>
-              </div>
-            </div>
 
-            {/* Actions for buyer */}
-            <div className="space-y-3">
-              {currentApprovalUrl && (
-                <a
-                  href={currentApprovalUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full py-3 px-4 rounded-xl border border-blue-600 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center space-x-2 transition"
+              {/* Action Buttons as explicitly requested */}
+              <div className="space-y-2 pt-1">
+                {/* 1. Continue to My Business Plan */}
+                <button
+                  type="button"
+                  id="btn-continue-to-plan"
+                  onClick={handleContinueToPlan}
+                  className="w-full py-3 px-4 rounded-xl font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-md shadow-emerald-600/20 transition flex items-center justify-center space-x-2 cursor-pointer text-xs"
                 >
-                  <span>Re-open PayPal Approval Window</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              )}
+                  <span>Continue to My Business Plan</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
 
-              {/* Status Poller Indicator */}
-              <div className="flex items-center justify-center space-x-2 py-2 text-xs text-slate-500">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Listening for buyer approval on PayPal Live...</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {/* 2. View Receipt / Invoice */}
+                  <button
+                    type="button"
+                    id="btn-view-invoice"
+                    onClick={() => setIsInvoiceModalOpen(true)}
+                    className="py-2.5 px-3 rounded-xl border border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs flex items-center justify-center space-x-1.5 transition cursor-pointer"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-slate-500" />
+                    <span>View Receipt / Invoice</span>
+                  </button>
+
+                  {/* 3. Download Invoice */}
+                  <button
+                    type="button"
+                    id="btn-download-invoice"
+                    onClick={() => {
+                      if (invoiceData) {
+                        downloadInvoicePdf(invoiceData);
+                      }
+                    }}
+                    className="py-2.5 px-3 rounded-xl border border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs flex items-center justify-center space-x-1.5 transition cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Download Invoice</span>
+                  </button>
+                </div>
               </div>
 
-              {/* Manual Confirmation Button - Server verifies buyer approval before capture */}
-              <button
-                type="button"
-                id="checkout-confirm-approval-btn"
-                onClick={handleCheckApprovalStatus}
-                disabled={isCheckingApproval}
-                className="w-full py-3.5 px-6 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-75"
-              >
-                {isCheckingApproval ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin text-white" />
-                    <span>Verifying Approval with PayPal...</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="w-5 h-5 text-emerald-300" />
-                    <span>I Have Approved on PayPal — Complete & Unlock</span>
-                  </>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={handleCancelCheckout}
-                className="w-full py-2 px-4 rounded-xl text-xs font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-50 transition"
-              >
-                Cancel Checkout & Select Another Package
-              </button>
+              <p className="text-[11px] text-center text-slate-400">
+                A copy of your receipt is stored with your order. Lifetime access active.
+              </p>
             </div>
-          </div>
-        )}
-
-        {/* STEP 4: Server Processing & Verification */}
-        {step === 'processing' && (
-          <div className="p-12 text-center">
-            <div className="w-16 h-16 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin mx-auto mb-4" />
-            <h3 className="text-xl font-bold text-slate-900 mb-2">Capturing & Verifying with PayPal...</h3>
-            <p className="text-sm text-slate-600 max-w-sm mx-auto">
-              Confirming buyer approval status with PayPal Live API, executing capture (${pkg.priceUSD} USD), and issuing cryptographically verified entitlement.
-            </p>
-          </div>
-        )}
-
-        {/* STEP 5: Success & Receipt */}
-        {step === 'success' && (
-          <div className="p-8 text-center">
-            <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto mb-4 shadow-sm">
-              <CheckCircle2 className="w-10 h-10" />
-            </div>
-            <span className="inline-block text-xs font-bold text-emerald-800 bg-emerald-100 px-3 py-1 rounded-full uppercase tracking-wider mb-2">
-              Verified Order Succeeded
-            </span>
-            <h3 className="text-2xl font-black text-slate-900 mb-2">
-              {pkg.name} Unlocked!
-            </h3>
-            <p className="text-sm text-slate-600 max-w-md mx-auto mb-6">
-              Congratulations! Your entitlement for <strong className="text-slate-900 font-semibold">{plan.input.businessName}</strong> is verified and active. All 34 sections, financial cash flow models, and export tools are accessible.
-            </p>
-
-            {/* Official Receipt Card */}
-            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 max-w-md mx-auto mb-6 text-left text-xs space-y-1.5">
-              <div className="flex items-center space-x-1.5 pb-2 border-b border-slate-200 text-slate-700 font-bold">
-                <Receipt className="w-4 h-4 text-emerald-600" />
-                <span>PayPal Official Transaction Receipt</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Internal Order ID:</span>
-                <span className="font-mono font-semibold text-slate-800">{currentOrderId}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">PayPal Order ID:</span>
-                <span className="font-mono font-bold text-blue-700">{currentPayPalOrderId || 'N/A'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Capture Transaction ID:</span>
-                <span className="font-mono font-bold text-emerald-700">{verifiedTransactionId}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Merchant Account:</span>
-                <span className="text-slate-700">{merchantEmail}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Package Unlocked:</span>
-                <span className="font-bold text-slate-900">{pkg.name}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Amount Paid:</span>
-                <span className="font-semibold text-slate-800">${pkg.priceUSD}.00 USD</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Verification Status:</span>
-                <span className="font-bold text-emerald-600">Verified & Paid</span>
-              </div>
-            </div>
-
-            <button
-              id="checkout-view-unlocked-plan-btn"
-              type="button"
-              onClick={handleFinish}
-              className="py-3.5 px-8 rounded-xl font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-all inline-flex items-center space-x-2 cursor-pointer"
-            >
-              <span>View Unlocked Business Plan</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-
-        {/* STEP 6: Failure / Cancellation with Retry */}
-        {step === 'error' && (
-          <div className="p-8 text-center">
-            <div className="w-16 h-16 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto mb-4 shadow-sm">
-              <AlertCircle className="w-10 h-10" />
-            </div>
-            <h3 className="text-xl font-bold text-slate-900 mb-2">Payment Did Not Complete</h3>
-            <p className="text-sm text-slate-600 max-w-md mx-auto mb-6">
-              {errorMessage || 'The PayPal checkout was cancelled or could not be authorized. No funds were captured.'}
-            </p>
-
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-              <button
-                type="button"
-                onClick={handleRetry}
-                className="py-3 px-6 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-md transition-all inline-flex items-center space-x-2 cursor-pointer"
-              >
-                <RotateCcw className="w-4 h-4" />
-                <span>Retry Payment</span>
-              </button>
-              <button
-                type="button"
-                onClick={onClose}
-                className="py-3 px-6 rounded-xl font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-all"
-              >
-                Return to Free Plan
-              </button>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
-    </div>
+
+      {/* Dedicated Invoice Viewing & Printing Modal */}
+      <InvoiceModal
+        isOpen={isInvoiceModalOpen}
+        onClose={() => setIsInvoiceModalOpen(false)}
+        invoice={invoiceData}
+      />
+    </>
   );
 };

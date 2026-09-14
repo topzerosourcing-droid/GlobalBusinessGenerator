@@ -178,7 +178,7 @@ export const SectionEditModal: React.FC<SectionEditModalProps> = ({
               }`}
             >
               <Sparkles className="h-3.5 w-3.5" />
-              <span>AI Revise & Regenerate</span>
+              <span>Revise & Regenerate</span>
             </button>
           </div>
 
@@ -379,7 +379,7 @@ export const SectionEditModal: React.FC<SectionEditModalProps> = ({
                   <Wand2 className="h-5 w-5 text-indigo-600 shrink-0 mt-0.5" />
                   <div>
                     <h4 className="text-xs font-bold text-indigo-950 uppercase tracking-wide">
-                      AI Section Strategist & Generator
+                      Section Strategist & Generator
                     </h4>
                     <p className="text-xs text-indigo-900/80 mt-0.5 leading-relaxed">
                       Regenerate this specific section with enhanced regional depth or provide custom revision instructions below. Other sections of your business plan will remain completely unchanged.
@@ -391,7 +391,7 @@ export const SectionEditModal: React.FC<SectionEditModalProps> = ({
               {/* Custom Guidance Input */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">
-                  Optional Revision Instructions (Steer the AI)
+                  Optional Revision Instructions (Custom Guidance)
                 </label>
                 <textarea
                   rows={3}
@@ -401,7 +401,7 @@ export const SectionEditModal: React.FC<SectionEditModalProps> = ({
                   className="w-full rounded-xl border border-slate-300 p-3.5 text-xs sm:text-sm text-slate-900 focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 outline-none leading-relaxed"
                 />
                 <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
-                  <span>Leave blank for a fresh standard AI optimization</span>
+                  <span>Leave blank for standard optimization</span>
                   <span>Will format directly to {planInput.currency}</span>
                 </div>
               </div>
@@ -417,7 +417,7 @@ export const SectionEditModal: React.FC<SectionEditModalProps> = ({
                   {isRegenerating ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      <span>Synthesizing Section Revision with Gemini...</span>
+                      <span>Synthesizing Section Revision...</span>
                     </>
                   ) : (
                     <>
@@ -442,7 +442,7 @@ export const SectionEditModal: React.FC<SectionEditModalProps> = ({
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-emerald-800 uppercase flex items-center gap-1.5">
                       <Check className="h-4 w-4 text-emerald-600" />
-                      <span>Fresh AI Section Generated Successfully</span>
+                      <span>Section Generated Successfully</span>
                     </span>
                     <button
                       type="button"

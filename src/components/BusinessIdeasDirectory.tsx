@@ -300,7 +300,7 @@ export const BusinessIdeasDirectory: React.FC<BusinessIdeasDirectoryProps> = ({
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 px-6 py-3.5 text-xs sm:text-sm font-bold text-white shadow-md hover:from-indigo-700 hover:to-indigo-800 transition active:scale-95"
             >
               <Sparkles className="h-4 w-4 text-amber-300" />
-              <span>Launch AI Idea Strategist</span>
+              <span>Launch Business Idea Generator</span>
             </button>
             <div className="text-[11px] text-slate-500 text-center lg:text-left">
               Get 10 ranked business ideas customized to your budget & country
@@ -679,7 +679,7 @@ export const BusinessIdeasDirectory: React.FC<BusinessIdeasDirectoryProps> = ({
               No matching business ideas found
             </h3>
             <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto">
-              Try adjusting your search criteria or let our AI generate custom ideas based on your exact profile.
+              Try adjusting your search criteria or generate custom business ideas based on your exact profile.
             </p>
             <div className="flex items-center justify-center gap-3 pt-2">
               <button
@@ -692,7 +692,7 @@ export const BusinessIdeasDirectory: React.FC<BusinessIdeasDirectoryProps> = ({
                 onClick={() => handleOpenAiGenerator()}
                 className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-xs hover:bg-indigo-700 transition"
               >
-                Generate with AI
+                Generate Custom Ideas
               </button>
             </div>
           </div>
@@ -713,7 +713,7 @@ export const BusinessIdeasDirectory: React.FC<BusinessIdeasDirectoryProps> = ({
         />
       )}
 
-      {/* AI Business Idea Generator Modal */}
+      {/* Business Idea Generator Modal */}
       <AIIdeaGeneratorModal
         isOpen={aiGeneratorOpen}
         onClose={() => setAiGeneratorOpen(false)}
@@ -727,7 +727,7 @@ export const BusinessIdeasDirectory: React.FC<BusinessIdeasDirectoryProps> = ({
             const ideaStub: CuratedBusinessIdea = {
               id: `custom-${Date.now()}`,
               slug: `custom-${Date.now()}`,
-              title: prefill.businessName || 'AI Generated Business Plan',
+              title: prefill.businessName || 'Custom Business Plan',
               tagline: prefill.businessIdea,
               industry: prefill.industry || 'General Business',
               category: prefill.industry || 'General Business',

@@ -180,7 +180,7 @@ export const PlanCompletedModal: React.FC<PlanCompletedModalProps> = ({
                 <Megaphone className="w-4 h-4" />
               </div>
               <div>
-                <span className="text-xs font-bold text-indigo-950 block">AI Marketing Kit</span>
+                <span className="text-xs font-bold text-indigo-950 block">Launch & Marketing Kit</span>
                 <span className="text-[11px] text-indigo-700 leading-tight block mt-0.5">
                   Get social captions, launch PR, and 5 growth ideas.
                 </span>

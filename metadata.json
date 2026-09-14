@@ -1,6 +1,6 @@
 {
   "name": "Global Business Generator",
-  "description": "AI-powered platform to turn business ideas into professional, actionable business plans for entrepreneurs worldwide.",
+  "description": "Global Business Generator — Turn Your Idea Into a Business. Generate bank and investor-ready business plans with financial projections, market analyses, and operational roadmaps for entrepreneurs worldwide.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

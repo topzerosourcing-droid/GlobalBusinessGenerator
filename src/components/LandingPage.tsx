@@ -71,7 +71,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
           {/* Short Explanation */}
           <p className="mt-6 text-base sm:text-lg md:text-xl text-slate-600 max-w-2xl mx-auto leading-relaxed font-normal">
-            Global Business Generator is an AI-powered platform that helps ambitious founders anywhere in the world transform raw concepts into comprehensive, investor-grade business plans complete with regional financial projections, market analyses, and operational roadmaps.
+            Global Business Generator helps ambitious founders anywhere in the world turn raw concepts into comprehensive, investor-grade business plans complete with regional financial projections, market analyses, and operational roadmaps.
           </p>
 
           {/* CTAs - Exact required buttons */}

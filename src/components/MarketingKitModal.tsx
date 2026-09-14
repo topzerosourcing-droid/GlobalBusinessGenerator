@@ -96,7 +96,7 @@ export const MarketingKitModal: React.FC<MarketingKitModalProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-base font-bold text-slate-900">AI Launch & Marketing Kit</h3>
+                <h3 className="text-base font-bold text-slate-900">Launch & Marketing Kit</h3>
                 <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-700">
                   Viral Engine
                 </span>
@@ -110,7 +110,7 @@ export const MarketingKitModal: React.FC<MarketingKitModalProps> = ({
             <button
               onClick={loadOrGenerateKit}
               disabled={loading}
-              title="Regenerate Kit with AI"
+              title="Regenerate Kit"
               className="p-2 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-indigo-600' : ''}`} />
@@ -166,7 +166,7 @@ export const MarketingKitModal: React.FC<MarketingKitModalProps> = ({
           {loading ? (
             <div className="py-16 text-center space-y-3">
               <div className="w-10 h-10 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
-              <p className="text-sm font-semibold text-slate-800">Generating AI Marketing Kit...</p>
+              <p className="text-sm font-semibold text-slate-800">Generating Launch & Marketing Kit...</p>
               <p className="text-xs text-slate-500 max-w-sm mx-auto">
                 Crafting customized social media launch copy, press announcements, and acquisition tactics for {input.businessName}.
               </p>

@@ -121,7 +121,7 @@ export const AIIdeaGeneratorModal: React.FC<AIIdeaGeneratorModalProps> = ({
               <Sparkles className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-bold">AI Business Opportunity Strategist</h2>
+              <h2 className="text-base sm:text-lg font-bold">Business Opportunity Generator</h2>
               <p className="text-xs text-slate-300">Discover 10 ranked business ideas tailored to your budget, country & skills</p>
             </div>
           </div>

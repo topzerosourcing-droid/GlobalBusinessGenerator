@@ -67,14 +67,60 @@ export const logout = async () => {
   return await signOut(auth);
 };
 
-// User Profile Firestore helpers
+// User Profile Local Storage Helpers for Offline Resilience
+export const getCachedUserProfile = (uid: string): UserProfile | null => {
+  if (typeof window === 'undefined' || !uid) return null;
+  try {
+    const raw = localStorage.getItem(`gbg_profile_${uid}`);
+    if (raw) return JSON.parse(raw);
+  } catch {
+    // Non-blocking
+  }
+  return null;
+};
+
+export const setCachedUserProfile = (profile: UserProfile): void => {
+  if (typeof window === 'undefined' || !profile?.uid) return;
+  try {
+    localStorage.setItem(`gbg_profile_${profile.uid}`, JSON.stringify(profile));
+  } catch {
+    // Non-blocking
+  }
+};
+
+/**
+ * Remove any undefined keys from an object to ensure Firestore compatibility
+ */
+export const stripUndefined = <T extends Record<string, any>>(obj: T): Partial<T> => {
+  const result: any = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+  return result;
+};
+
+// User Profile Firestore helpers with robust offline resilience
 export const getUserProfile = async (uid: string, emailHint?: string | null): Promise<UserProfile | null> => {
+  if (!uid) return null;
+
+  // 1. If navigator indicates offline, immediately return cached profile if available
+  const isOfflineBrowser = typeof navigator !== 'undefined' && !navigator.onLine;
+  const cached = getCachedUserProfile(uid);
+
+  if (isOfflineBrowser && cached) {
+    return { ...cached, _isOfflineFallback: true } as UserProfile;
+  }
+
   try {
     const userDocRef = doc(db, 'users', uid);
     const snap = await getDoc(userDocRef);
+
     if (snap.exists()) {
       const data = snap.data() as UserProfile;
       const targetEmail = data.email || emailHint || auth.currentUser?.email || auth.currentUser?.providerData?.[0]?.email;
+      
       // Auto-upgrade permanent super admin if needed
       if (isPermanentSuperAdminEmail(targetEmail) && (data.role !== 'SUPER_ADMIN' || data.tier !== 'enterprise' || data.status !== 'active')) {
         const upgraded: Partial<UserProfile> = {
@@ -84,7 +130,7 @@ export const getUserProfile = async (uid: string, emailHint?: string | null): Pr
           isActive: true,
           updatedAt: new Date().toISOString()
         };
-        await updateDoc(userDocRef, upgraded);
+        await updateDoc(userDocRef, stripUndefined(upgraded));
         try {
           await setDoc(doc(db, 'super_admins', uid), {
             uid,
@@ -92,17 +138,61 @@ export const getUserProfile = async (uid: string, emailHint?: string | null): Pr
             role: 'SUPER_ADMIN',
             verifiedAt: new Date().toISOString()
           }, { merge: true });
-        } catch (e) {
+        } catch {
           // Non-blocking
         }
-        return { ...data, ...upgraded };
+        const merged = { ...data, ...upgraded };
+        setCachedUserProfile(merged);
+        return merged;
       }
+
+      setCachedUserProfile(data);
       return data;
     }
+
+    // Document truly does not exist in Firestore
     return null;
-  } catch (err) {
-    console.error('Error fetching user profile:', err);
-    return null;
+  } catch (err: any) {
+    const isOfflineErr = 
+      err?.code === 'unavailable' ||
+      err?.code === 'failed-precondition' ||
+      err?.message?.includes('offline') ||
+      err?.message?.includes('client is offline') ||
+      err?.message?.includes('network') ||
+      (typeof navigator !== 'undefined' && !navigator.onLine);
+
+    if (isOfflineErr) {
+      console.debug('[Firebase] Client is offline; using cached or fallback profile.');
+      if (cached) {
+        return { ...cached, _isOfflineFallback: true } as UserProfile;
+      }
+      // Construct fallback provisional profile from authenticated user
+      const currentUser = auth.currentUser;
+      const targetEmail = currentUser?.email || emailHint || '';
+      const isSuperAdmin = isPermanentSuperAdminEmail(targetEmail);
+      const fallback: UserProfile = {
+        uid,
+        name: currentUser?.displayName || targetEmail.split('@')[0] || 'Entrepreneur',
+        email: targetEmail,
+        country: 'United States',
+        preferredCurrency: 'USD',
+        createdAt: new Date().toISOString(),
+        tier: isSuperAdmin ? 'enterprise' : 'free',
+        role: isSuperAdmin ? 'SUPER_ADMIN' : 'USER',
+        status: 'active',
+        isActive: true,
+        businessPlansCount: 0,
+        referralClicksCount: 0,
+        referralSignupsCount: 0,
+        referralConversionsCount: 0,
+        _isOfflineFallback: true,
+      } as any;
+      return fallback;
+    }
+
+    // Non-offline unexpected error
+    console.warn('[Firebase] Warning fetching user profile:', err?.message || err);
+    return cached || null;
   }
 };
 
@@ -111,68 +201,84 @@ export const syncUserProfile = async (
   additionalData?: { country?: string; preferredCurrency?: string; name?: string }
 ): Promise<UserProfile> => {
   const userDocRef = doc(db, 'users', user.uid);
-  const snap = await getDoc(userDocRef);
   const resolvedEmail = user.email || user.providerData?.find(p => p.email)?.email || '';
   const isSuperAdmin = isPermanentSuperAdminEmail(resolvedEmail);
+  const cached = getCachedUserProfile(user.uid);
 
   // Check if there was an active referral in localStorage
   const activeReferral = typeof window !== 'undefined' 
     ? localStorage.getItem('gbg_active_referral') || undefined 
     : undefined;
 
-  if (snap.exists()) {
-    const existing = snap.data() as UserProfile;
-    let needsUpdate = false;
-    const updates: Partial<UserProfile> = {};
+  try {
+    const snap = await getDoc(userDocRef);
 
-    // Auto-upgrade if permanent super admin
-    if (isSuperAdmin && (existing.role !== 'SUPER_ADMIN' || existing.tier !== 'enterprise' || existing.status !== 'active')) {
-      updates.role = 'SUPER_ADMIN';
-      updates.tier = 'enterprise';
-      updates.status = 'active';
-      updates.isActive = true;
-      needsUpdate = true;
+    if (snap.exists()) {
+      const existing = snap.data() as UserProfile;
+      let needsUpdate = false;
+      const updates: Partial<UserProfile> = {};
 
-      try {
-        await setDoc(doc(db, 'super_admins', user.uid), {
-          uid: user.uid,
-          email: resolvedEmail || user.email,
-          role: 'SUPER_ADMIN',
-          verifiedAt: new Date().toISOString()
-        }, { merge: true });
-      } catch (e) {
-        // Continue
+      // Auto-upgrade if permanent super admin
+      if (isSuperAdmin && (existing.role !== 'SUPER_ADMIN' || existing.tier !== 'enterprise' || existing.status !== 'active')) {
+        updates.role = 'SUPER_ADMIN';
+        updates.tier = 'enterprise';
+        updates.status = 'active';
+        updates.isActive = true;
+        needsUpdate = true;
+
+        try {
+          await setDoc(doc(db, 'super_admins', user.uid), {
+            uid: user.uid,
+            email: resolvedEmail || user.email,
+            role: 'SUPER_ADMIN',
+            verifiedAt: new Date().toISOString()
+          }, { merge: true });
+        } catch {
+          // Continue
+        }
       }
-    }
-    
-    // If existing user has no referral code yet, backfill it
-    if (!existing.referralCode) {
-      const code = generateReferralCodeForUser(user.uid, existing.name);
-      updates.referralCode = code;
-      needsUpdate = true;
-      await getOrCreateUserReferralRecord(user.uid, existing.name, code);
-    }
+      
+      // If existing user has no referral code yet, backfill it
+      if (!existing.referralCode) {
+        const code = generateReferralCodeForUser(user.uid, existing.name);
+        updates.referralCode = code;
+        needsUpdate = true;
+        await getOrCreateUserReferralRecord(user.uid, existing.name, code);
+      }
 
-    // If additional data provided, update
-    if (additionalData?.country && additionalData.country !== existing.country) {
-      updates.country = additionalData.country;
-      needsUpdate = true;
-    }
-    if (additionalData?.preferredCurrency && additionalData.preferredCurrency !== existing.preferredCurrency) {
-      updates.preferredCurrency = additionalData.preferredCurrency;
-      needsUpdate = true;
-    }
-    if (additionalData?.name && additionalData.name !== existing.name) {
-      updates.name = additionalData.name;
-      needsUpdate = true;
-    }
+      // If additional data provided, update
+      if (additionalData?.country && additionalData.country !== existing.country) {
+        updates.country = additionalData.country;
+        needsUpdate = true;
+      }
+      if (additionalData?.preferredCurrency && additionalData.preferredCurrency !== existing.preferredCurrency) {
+        updates.preferredCurrency = additionalData.preferredCurrency;
+        needsUpdate = true;
+      }
+      if (additionalData?.name && additionalData.name !== existing.name) {
+        updates.name = additionalData.name;
+        needsUpdate = true;
+      }
 
-    if (needsUpdate) {
-      updates.updatedAt = new Date().toISOString();
-      await updateDoc(userDocRef, updates);
-      return { ...existing, ...updates };
+      if (needsUpdate) {
+        updates.updatedAt = new Date().toISOString();
+        await updateDoc(userDocRef, stripUndefined(updates));
+        const updated = { ...existing, ...updates };
+        setCachedUserProfile(updated);
+        return updated;
+      }
+      setCachedUserProfile(existing);
+      return existing;
     }
-    return existing;
+  } catch (readErr: any) {
+    const isOffline = 
+      readErr?.code === 'unavailable' ||
+      readErr?.message?.includes('offline') ||
+      (typeof navigator !== 'undefined' && !navigator.onLine);
+
+    if (isOffline && cached) {
+      return { ...cached, _isOfflineFallback: true } as UserProfile;
+    }
   }
 
   // Detect locale defaults for country and currency
@@ -184,7 +290,7 @@ export const syncUserProfile = async (
   // Record referral attribution if registered via an invite link
   const referredByCode = (activeReferral && activeReferral !== myReferralCode) ? activeReferral : undefined;
 
-  const newProfile: UserProfile = {
+  const rawProfile: Record<string, any> = {
     uid: user.uid,
     name: displayName,
     email: user.email || '',
@@ -195,37 +301,53 @@ export const syncUserProfile = async (
     role: isSuperAdmin ? 'SUPER_ADMIN' : 'USER',
     status: 'active',
     isActive: true,
-    photoURL: user.photoURL || undefined,
     businessPlansCount: 0,
     referralCode: myReferralCode,
-    referredBy: referredByCode,
     referralClicksCount: 0,
     referralSignupsCount: 0,
     referralConversionsCount: 0,
   };
 
-  await setDoc(userDocRef, newProfile);
-  
-  // Register in super_admins directory if applicable
-  if (isSuperAdmin) {
-    try {
+  if (user.photoURL) {
+    rawProfile.photoURL = user.photoURL;
+  }
+  if (referredByCode) {
+    rawProfile.referredBy = referredByCode;
+  }
+
+  const newProfile = stripUndefined(rawProfile) as UserProfile;
+  setCachedUserProfile(newProfile);
+
+  try {
+    await setDoc(userDocRef, newProfile);
+    
+    // Register in super_admins directory if applicable
+    if (isSuperAdmin) {
       await setDoc(doc(db, 'super_admins', user.uid), {
         uid: user.uid,
         email: user.email,
         role: 'SUPER_ADMIN',
         verifiedAt: new Date().toISOString()
       }, { merge: true });
-    } catch (e) {
-      // Continue
     }
-  }
 
-  // Initialize referral record for user
-  await getOrCreateUserReferralRecord(user.uid, displayName, myReferralCode);
+    // Initialize referral record for user
+    await getOrCreateUserReferralRecord(user.uid, displayName, myReferralCode);
 
-  // Attribute signup to referrer
-  if (referredByCode) {
-    await recordReferralSignup(referredByCode, user.uid);
+    // Attribute signup to referrer
+    if (referredByCode) {
+      await recordReferralSignup(referredByCode, user.uid);
+    }
+  } catch (writeErr: any) {
+    const isOffline = 
+      writeErr?.code === 'unavailable' ||
+      writeErr?.message?.includes('offline') ||
+      (typeof navigator !== 'undefined' && !navigator.onLine);
+    if (isOffline) {
+      console.debug('[Firebase] Profile sync deferred while offline.');
+    } else {
+      console.warn('[Firebase] Warning syncing user profile:', writeErr?.message || writeErr);
+    }
   }
 
   return newProfile;

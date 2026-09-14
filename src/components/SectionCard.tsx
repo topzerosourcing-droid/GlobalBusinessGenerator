@@ -99,10 +99,10 @@ export const SectionCard: React.FC<SectionCardProps> = ({
               type="button"
               onClick={() => onRegenerate(sectionKey)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-50 border border-indigo-100 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition shadow-2xs"
-              title="Revise or regenerate with AI"
+              title="Revise or regenerate section"
             >
               <RotateCw className="h-3.5 w-3.5 text-indigo-600" />
-              <span>AI Revise</span>
+              <span>Revise</span>
             </button>
           </div>
         )}
@@ -1378,7 +1378,7 @@ function renderSectionContent(
           {data.strategicVerdict && (
             <div className="rounded-xl bg-slate-900 p-5 text-white space-y-1.5 shadow-sm">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-indigo-300">Consultant AI Strategic Verdict</span>
+                <span className="text-xs font-bold uppercase tracking-wider text-indigo-300">Strategic Consultant Verdict</span>
                 <span className="rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.2 text-[10px] font-bold">
                   Recommended Path Forward
                 </span>

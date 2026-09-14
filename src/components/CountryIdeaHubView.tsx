@@ -261,20 +261,20 @@ export const CountryIdeaHubView: React.FC<CountryIdeaHubViewProps> = ({
         </div>
       </div>
 
-      {/* Country Hub Footer & AI Strategy Prompt */}
+      {/* Country Hub Footer & Strategy Prompt */}
       <div className="rounded-2xl bg-slate-100 p-6 text-center space-y-3">
         <h3 className="text-base font-bold text-slate-900">
           Have a specific budget or unique skill in {countryProfile.name}?
         </h3>
         <p className="text-xs sm:text-sm text-slate-600 max-w-xl mx-auto">
-          Let our AI analyze local market conditions in {countryProfile.name} and recommend 10 ranked, capital-aligned business ideas.
+          Analyze local market conditions in {countryProfile.name} and generate 10 ranked, capital-aligned business ideas.
         </p>
         <button
           onClick={() => onOpenAIGenerator(countryProfile.name)}
           className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-xs sm:text-sm font-bold text-white shadow-xs hover:bg-indigo-700 transition"
         >
           <Sparkles className="h-4 w-4 text-amber-300" />
-          <span>Launch AI Opportunity Strategist for {countryProfile.name}</span>
+          <span>Launch Opportunity Generator for {countryProfile.name}</span>
         </button>
       </div>
     </div>
